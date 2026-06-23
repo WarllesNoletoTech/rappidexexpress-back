@@ -28,9 +28,6 @@ export class IfoodEventEntity {
   @Column({ nullable: true })
   createdAt?: string;
 
-  @Column({ nullable: true })
-  payload?: any;
-
   @Column()
   processedAt: Date;
 

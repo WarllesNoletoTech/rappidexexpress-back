@@ -37,6 +37,24 @@ export class UserResult {
   isActive: boolean;
 
   @Expose()
+  blocked: boolean;
+
+  @Expose()
+  blockedReason?: string;
+
+  @Expose()
+  blockedAt?: Date;
+
+  @Expose()
+  blockedBySystem: boolean;
+
+  @Expose()
+  unblockedAt?: Date;
+
+  @Expose()
+  unblockedBy?: string;
+
+  @Expose()
   cityId: string;
   
   @Expose()
@@ -71,6 +89,8 @@ export class UserResult {
     return plainToClass<UserResult, UserResult>(UserResult, {
       ...user,
       usesExternalIfoodPdv: Boolean(user?.usesExternalIfoodPdv),
+      blocked: Boolean(user?.blocked),
+      blockedBySystem: Boolean(user?.blockedBySystem),
     } as UserResult, {
       excludeExtraneousValues: true,
     });

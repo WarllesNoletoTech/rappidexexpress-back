@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MongoRepository } from 'typeorm';
@@ -25,6 +25,10 @@ export class AuthenticatorService {
 
     if (!userExists) {
       throw new BadRequestException('Usuário não encontrado.');
+    }
+
+    if (userExists.blocked) {
+      throw new ForbiddenException('Usuário bloqueado. Procure o administrador.');
     }
 
     const isMatch = await bcrypt.compare(data.password, userExists.password);

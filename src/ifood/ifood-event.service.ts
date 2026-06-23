@@ -62,34 +62,17 @@ export class IfoodEventService {
     },
     acknowledged = false,
   ) {
-    const eventId = String(event?.id || '').trim();
-
-    if (!eventId) {
-      return null;
-    }
-
-    const payload = {
-      eventId,
+    return this.ifoodEventRepository.save({
+      eventId: event.id,
       orderId: event.orderId ?? '',
       merchantId: event.merchantId ?? '',
       code: event.code ?? '',
       fullCode: event.fullCode ?? '',
       salesChannel: event.salesChannel ?? '',
       createdAt: event.createdAt ?? '',
-      payload: event,
       processedAt: new Date(),
-    };
-
-    await this.ifoodEventRepository.updateOne(
-      { eventId },
-      {
-        $set: payload,
-        $setOnInsert: { acknowledged },
-      } as any,
-      { upsert: true } as any,
-    );
-
-    return this.findByEventId(eventId);
+      acknowledged,
+    });
   }
 
   async markAsAcknowledged(eventId: string) {
