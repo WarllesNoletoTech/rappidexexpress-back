@@ -147,33 +147,7 @@ export class DeliveryResult {
   @Expose()
   ifoodMerchantName?: string;
 
-  @Expose()
-  ifoodMerchantLocation?: string;
-
-  private static getIfoodMerchantCardData(delivery: DeliveryEntity) {
-    const establishment = delivery.establishment;
-    const merchantId = String((delivery as any).ifoodMerchantId || '').trim();
-    const ifoodMerchants = Array.isArray(establishment?.ifoodMerchants)
-      ? establishment.ifoodMerchants
-      : [];
-
-    const matchedMerchant = merchantId
-      ? ifoodMerchants.find(
-          (merchant) =>
-            String(merchant?.merchantId || '').trim() === merchantId,
-        )
-      : null;
-
-    return {
-      ifoodMerchantName: matchedMerchant?.name || establishment?.name || null,
-      ifoodMerchantLocation:
-        matchedMerchant?.pickupAddress || establishment?.location || null,
-    };
-  }
-
   public static fromEntity(delivery: DeliveryEntity) {
-    const ifoodMerchantCardData = this.getIfoodMerchantCardData(delivery);
-
     return plainToClass<DeliveryResult, DeliveryResult>(
       DeliveryResult,
       {
@@ -182,8 +156,7 @@ export class DeliveryResult {
         ifoodOrderId: (delivery as any).ifoodOrderId ?? null,
         ifoodDisplayId: (delivery as any).ifoodDisplayId ?? null,
         ifoodMerchantId: (delivery as any).ifoodMerchantId ?? null,
-        ifoodMerchantName: ifoodMerchantCardData.ifoodMerchantName,
-        ifoodMerchantLocation: ifoodMerchantCardData.ifoodMerchantLocation,
+        ifoodMerchantName: (delivery as any).ifoodMerchantName ?? null,
         establishmentId: delivery.establishment
           ? delivery.establishment.id
           : null,
