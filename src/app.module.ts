@@ -8,11 +8,6 @@ import { AuthenticatorModule } from './authenticator/authenticator.module';
 import { DeliveryModule } from './delivery/delivery.module';
 import { CityModule } from './city/city.module';
 import { IfoodModule } from './ifood/ifood.module';
-import { FinancialSettlementModule } from './financial-settlement/financial-settlement.module';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { UserEntity } from './database/entities';
-import { SecurityController } from './security.controller';
-import { SecurityService } from './security.service';
 
 @Module({
   imports: [
@@ -25,10 +20,8 @@ import { SecurityService } from './security.service';
     DeliveryModule,
     CityModule,
     IfoodModule,
-    FinancialSettlementModule,
-    TypeOrmModule.forFeature([UserEntity]),
   ],
-  controllers: [AppController, SecurityController],
-  providers: [AppService, SecurityService],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}

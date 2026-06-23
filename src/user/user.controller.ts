@@ -6,7 +6,6 @@ import {
   Param,
   Post,
   Put,
-  Patch,
   Query,
   UnauthorizedException,
   UseGuards,
@@ -197,18 +196,6 @@ export class UserController {
       );
     }
     return await this.userService.resetUserPassword(param.user, user);
-  }
-
-
-  @Patch(':user/unblock')
-  @UseGuards(JwtAuthGuard)
-  async unblockUser(@Param() param: UserParamsDto, @User() user: UserRequest) {
-    if (!onlyForAdmin(user.type)) {
-      throw new UnauthorizedException(
-        'Você não tem permissão para esse recurso.',
-      );
-    }
-    return await this.userService.unblockUser(param.user, user);
   }
 
   @Delete(':user')

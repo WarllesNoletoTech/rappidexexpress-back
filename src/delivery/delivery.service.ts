@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   forwardRef,
-  ForbiddenException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -9,15 +8,9 @@ import {
   OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
-import {
-  CityEntity,
-  DeliveryEntity,
-  LogEntity,
-  UserEntity,
-} from '../database/entities';
+import { DeliveryEntity, LogEntity, UserEntity } from '../database/entities';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MongoRepository } from 'typeorm';
-import { ObjectId } from 'mongodb';
 import { v4 as uuid } from 'uuid';
 import { addHours } from 'date-fns';
 
@@ -31,11 +24,7 @@ import {
   ReleaseDeliveryDto,
 } from './dto';
 import { UserRequest } from '../shared/interfaces';
-import {
-  Permissions,
-  StatusDelivery,
-  UserType,
-} from '../shared/constants/enums.constants';
+import { StatusDelivery, UserType } from '../shared/constants/enums.constants';
 import { IfoodOrderLinkService } from '../ifood/ifood-order-link.service';
 import { IfoodOrdersService } from '../ifood/ifood-orders.service';
 import { IfoodCreditsService } from '../ifood/ifood-credits.service';
@@ -55,8 +44,6 @@ export class DeliveryService implements OnModuleInit {
     private readonly deliveryRepository: MongoRepository<DeliveryEntity>,
     @InjectRepository(LogEntity)
     private readonly logRepository: MongoRepository<LogEntity>,
-    @InjectRepository(CityEntity)
-    private readonly cityRepository: MongoRepository<CityEntity>,
     private readonly ordersGateway: OrdersGateway,
     @Inject(forwardRef(() => IfoodOrdersService))
     private readonly ifoodOrdersService: IfoodOrdersService,
@@ -67,78 +54,6 @@ export class DeliveryService implements OnModuleInit {
     @Inject(forwardRef(() => IfoodEventService))
     private readonly ifoodEventService: IfoodEventService,
   ) {}
-
-  private isAdminOrSuperAdmin(user: UserEntity | UserRequest) {
-    const type = String(user?.type || '').toLowerCase();
-    const permission = String(
-      (user as UserEntity)?.permission || '',
-    ).toLowerCase();
-
-    return (
-      type === UserType.ADMIN ||
-      type === UserType.SUPERADMIN ||
-      type === Permissions.MASTER ||
-      permission === Permissions.MASTER
-    );
-  }
-
-  private isShopkeeperUser(user: UserEntity | UserRequest) {
-    const shopkeeperTypes = [
-      UserType.SHOPKEEPER,
-      UserType.SHOPKEEPERADMIN,
-      'establishment',
-      'store',
-      'company',
-      'lojista',
-    ];
-    const type = String(user?.type || '').toLowerCase();
-
-    return shopkeeperTypes.includes(type as UserType);
-  }
-
-  private isDeliveryAssigned(delivery: DeliveryEntity) {
-    const assignedStatuses: StatusDelivery[] = [
-      StatusDelivery.ONCOURSE,
-      StatusDelivery.ARRIVED_AT_STORE,
-      StatusDelivery.COLLECTED,
-      StatusDelivery.ARRIVED_AT_DESTINATION,
-      StatusDelivery.AWAITING_CODE,
-    ];
-
-    const deliveryData = delivery as any;
-
-    return Boolean(
-      deliveryData?.motoboy?.id ||
-      deliveryData?.motoboyId ||
-      deliveryData?.deliveryManId ||
-      deliveryData?.assignedTo ||
-      deliveryData?.courierId ||
-      (deliveryData?.motoboy && Object.keys(deliveryData.motoboy).length > 0) ||
-      assignedStatuses.includes(delivery?.status),
-    );
-  }
-
-  private validateStoreCanUpdateDeliveryStatus(
-    user: UserEntity | UserRequest,
-    delivery: DeliveryEntity,
-  ) {
-    if (this.isAdminOrSuperAdmin(user)) {
-      return;
-    }
-
-    if (this.isShopkeeperUser(user) && this.isDeliveryAssigned(delivery)) {
-      throw new ForbiddenException(
-        'Este pedido já foi atribuído a um motoboy. Apenas administradores podem alterar o status.',
-      );
-    }
-  }
-
-  private ensureShopkeeperCanCancelDelivery(
-    user: UserEntity | UserRequest,
-    delivery: DeliveryEntity,
-  ) {
-    this.validateStoreCanUpdateDeliveryStatus(user, delivery);
-  }
 
   private async syncIfoodOnCourseIfNeeded(
     previousDelivery: DeliveryEntity,
@@ -158,7 +73,7 @@ export class DeliveryService implements OnModuleInit {
     previousDelivery: DeliveryEntity,
     nextDelivery: DeliveryEntity,
     orderId: string,
-    merchantId: string,
+    merchantId?: string,
   ): Promise<
     Partial<
       Record<
@@ -210,6 +125,50 @@ export class DeliveryService implements OnModuleInit {
     return flags;
   }
 
+  private async getIfoodSyncIdentifiers(delivery: DeliveryEntity) {
+    const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
+      delivery.id,
+    );
+
+    const orderId = String(
+      delivery.ifoodOrderId || ifoodLink?.ifoodOrderId || '',
+    ).trim();
+    const merchantId = String(
+      delivery.ifoodMerchantId || ifoodLink?.merchantId || '',
+    ).trim();
+
+    const isIfoodOrder = Boolean(
+      orderId || merchantId || ifoodLink?.ifoodOrderId || ifoodLink?.merchantId,
+    );
+
+    if (!isIfoodOrder) {
+      return null;
+    }
+
+    this.logger.log(
+      `Pedido iFood identificado. DeliveryId: ${delivery.id}. OrderId: ${orderId || 'não informado'}. MerchantId: ${merchantId || 'não informado'}. Origem: ${delivery.ifoodOrderId || delivery.ifoodMerchantId ? 'delivery' : 'ifoodOrderLink'}.`,
+    );
+
+    if (!orderId) {
+      this.logger.warn(
+        `Delivery ${delivery.id} é iFood, mas não possui ifoodOrderId válido para sincronização.`,
+      );
+      return null;
+    }
+
+    if (!merchantId) {
+      this.logger.warn(
+        `Delivery ${delivery.id} é iFood e possui ifoodOrderId=${orderId}, mas sem ifoodMerchantId; tentando sincronizar com credenciais padrão.`,
+      );
+    }
+
+    return {
+      orderId,
+      merchantId: merchantId || undefined,
+      ifoodLink,
+    };
+  }
+
   private async syncIfoodIfNeeded(
     previousDelivery: DeliveryEntity,
     nextDelivery: DeliveryEntity,
@@ -245,27 +204,14 @@ export class DeliveryService implements OnModuleInit {
       return {};
     }
 
-    const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
-      previousDelivery.id,
-    );
+    const ifoodIdentifiers =
+      await this.getIfoodSyncIdentifiers(previousDelivery);
 
-    if (!ifoodLink) {
+    if (!ifoodIdentifiers) {
       return {};
     }
 
-    this.logger.log(
-      `Pedido iFood identificado para sincronização. DeliveryId: ${previousDelivery.id}.`,
-    );
-
-    const orderId = String(ifoodLink.ifoodOrderId || '').trim();
-    const merchantId = String(ifoodLink.merchantId || '').trim();
-
-    if (!orderId || !merchantId) {
-      this.logger.warn(
-        `Delivery ${previousDelivery.id} é iFood, mas sem orderId/merchantId válidos. Sincronização ignorada.`,
-      );
-      return {};
-    }
+    const { orderId, merchantId } = ifoodIdentifiers;
 
     try {
       if (nextStatus === StatusDelivery.ONCOURSE) {
@@ -300,6 +246,10 @@ export class DeliveryService implements OnModuleInit {
       }
 
       if (nextStatus === StatusDelivery.COLLECTED) {
+        this.logger.log(
+          `Coleta confirmada no Rappidex. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}.`,
+        );
+
         const flags = await this.ensureIfoodOnCourseSynced(
           previousDelivery,
           nextDelivery,
@@ -308,13 +258,26 @@ export class DeliveryService implements OnModuleInit {
         );
 
         if (!previousDelivery.ifoodDispatchSynced) {
-          await this.ifoodOrdersService.dispatchLogisticsOrder(
-            orderId,
-            merchantId,
+          this.logger.log(
+            `Enviando dispatch para iFood. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}.`,
           );
+
+          try {
+            await this.ifoodOrdersService.dispatchLogisticsOrder(
+              orderId,
+              merchantId,
+            );
+          } catch (error: any) {
+            this.logger.error(
+              `Falha ao enviar dispatch para iFood. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}. status=${error?.response?.status || error?.status || 'N/A'} message=${error?.response?.data?.message || error?.message || error}`,
+              error?.stack || error,
+            );
+            throw error;
+          }
+
           flags.ifoodDispatchSynced = true;
           this.logger.log(
-            `dispatch enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
+            `Pedido enviado para em rota no iFood. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}.`,
           );
         }
 
@@ -399,6 +362,10 @@ export class DeliveryService implements OnModuleInit {
           previousDelivery?.establishment?.usesExternalIfoodPdv,
         );
 
+        this.logger.log(
+          `Confirmação de código iFood recebida. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}. HasDeliveryDropCodeRequested: ${hasDeliveryDropCodeRequested}. StatusLocal: ${previousDelivery.status}.`,
+        );
+
         if (!hasDeliveryDropCodeRequested) {
           const ifoodConclusionStatus = await this.getIfoodConclusionStatus(
             orderId,
@@ -412,8 +379,8 @@ export class DeliveryService implements OnModuleInit {
             return {};
           }
 
-          throw new BadRequestException(
-            'O pedido ainda não está elegível para validação do código no iFood (DELIVERY_DROP_CODE_REQUESTED).',
+          this.logger.warn(
+            `DELIVERY_DROP_CODE_REQUESTED não encontrado localmente; tentando validar código diretamente no iFood. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}.`,
           );
         }
 
@@ -424,7 +391,7 @@ export class DeliveryService implements OnModuleInit {
         }
 
         this.logger.log(
-          `verifyDeliveryCode enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
+          `verifyDeliveryCode enviado para iFood. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}.`,
         );
 
         let verifyResult: any;
@@ -434,7 +401,13 @@ export class DeliveryService implements OnModuleInit {
             deliveryData.deliveryCode,
             merchantId,
           );
+          this.logger.log(
+            `Código de entrega validado no iFood com sucesso. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}. Resultado: ${JSON.stringify(verifyResult || {})}`,
+          );
         } catch (error: any) {
+          this.logger.error(
+            `Erro retornado pelo iFood ao validar código. DeliveryId: ${previousDelivery.id}. OrderId: ${orderId}. MerchantId: ${merchantId || 'não informado'}. status=${error?.response?.status || error?.status || 'N/A'} message=${error?.response?.data?.message || error?.message || error}`,
+          );
           const usesExternalIfoodPdv = Boolean(
             previousDelivery?.establishment?.usesExternalIfoodPdv,
           );
@@ -701,56 +674,19 @@ export class DeliveryService implements OnModuleInit {
       queryParams.includeDashboardCounts,
     );
 
-    const dashboardCountsPromise = shouldIncludeDashboardCounts
-      ? this.getDashboardCountsByUser(userForRequest, queryParams)
-      : Promise.resolve(undefined);
-
-    const hasDateFilter = Boolean(
-      queryParams.createdIn || queryParams.createdUntil,
-    );
-
-    let deliveries: DeliveryEntity[];
-    let count: number;
-    let itemsPerPage: number;
-    let dashboardCounts;
-
-    if (hasDateFilter) {
-      const [allDeliveries, resolvedDashboardCounts] = await Promise.all([
-        this.deliveryRepository.find({
-          relations: { motoboy: true, establishment: true },
-          where,
-          order: { createdAt: 'ASC' },
-        }),
-        dashboardCountsPromise,
-      ]);
-
-      const filteredDeliveries = allDeliveries.filter((delivery) =>
-        this.isDeliveryInsideReportDateFilter(delivery, queryParams),
-      );
-
-      deliveries = filteredDeliveries.slice(skip, skip + take);
-      count = filteredDeliveries.length;
-      itemsPerPage = take;
-      dashboardCounts = resolvedDashboardCounts;
-    } else {
-      const [pagedDeliveries, totalDeliveries, resolvedDashboardCounts] =
-        await Promise.all([
-          this.deliveryRepository.find({
-            relations: { motoboy: true, establishment: true },
-            where,
-            skip,
-            take,
-            order: { createdAt: 'ASC' },
-          }),
-          this.deliveryRepository.count(where),
-          dashboardCountsPromise,
-        ]);
-
-      deliveries = pagedDeliveries;
-      count = totalDeliveries;
-      itemsPerPage = deliveries.length;
-      dashboardCounts = resolvedDashboardCounts;
-    }
+    const [deliveries, count, dashboardCounts] = await Promise.all([
+      this.deliveryRepository.find({
+        relations: { motoboy: true, establishment: true },
+        where,
+        skip,
+        take,
+        order: { createdAt: 'ASC' },
+      }),
+      this.deliveryRepository.count(where),
+      shouldIncludeDashboardCounts
+        ? this.getDashboardCountsByUser(userForRequest)
+        : Promise.resolve(undefined),
+    ]);
 
     const ifoodLinks = await this.ifoodOrderLinkService.findByDeliveryIds(
       deliveries.map((delivery) => delivery.id),
@@ -773,81 +709,43 @@ export class DeliveryService implements OnModuleInit {
 
     return ListDeliverysResult.fromEntities(
       deliveriesWithSource as any,
-      itemsPerPage,
+      deliveries.length,
       queryParams.page,
       count,
       dashboardCounts,
     );
   }
 
-  async getDashboardCounts(
-    user: UserRequest,
-    queryParams: ListDeliveriesQueryDTO = {} as ListDeliveriesQueryDTO,
-  ) {
+  async getDashboardCounts(user: UserRequest) {
     const userForRequest = await this.findOneUserById(user.id);
 
-    return this.getDashboardCountsByUser(userForRequest, queryParams);
+    return this.getDashboardCountsByUser(userForRequest);
   }
 
-  private async getDashboardCountsByUser(
-    userForRequest: UserEntity,
-    queryParams: ListDeliveriesQueryDTO = {} as ListDeliveriesQueryDTO,
-  ) {
-    const countQueryParams = this.applyDashboardCityFilter(
-      userForRequest,
-      queryParams,
-    );
-
+  private async getDashboardCountsByUser(userForRequest: UserEntity) {
     const pendingWhere = this.buildDeliveriesWhere(userForRequest, {
-      ...countQueryParams,
       status: StatusDelivery.PENDING,
     } as ListDeliveriesQueryDTO);
 
-    const assignedWhere = this.buildAssignedDeliveriesWhere(
-      userForRequest,
-      countQueryParams,
-    );
+    const assignedWhere = this.buildAssignedDeliveriesWhere(userForRequest);
 
     const waitingReleaseWhere = this.buildDeliveriesWhere(userForRequest, {
-      ...countQueryParams,
       status: StatusDelivery.AWAITING_RELEASE,
     } as ListDeliveriesQueryDTO);
-
-    const adminFinancialWhere = this.buildDeliveriesWhere(userForRequest, {
-      ...countQueryParams,
-      status: StatusDelivery.FINISHED,
-    } as ListDeliveriesQueryDTO);
-
-    const [pending, assigned, waitingRelease, adminDeliveries, city] =
-      await Promise.all([
-        this.deliveryRepository.count(pendingWhere),
-        this.deliveryRepository.count(assignedWhere),
-        this.deliveryRepository.count(waitingReleaseWhere),
-        this.findDashboardDeliveries(adminFinancialWhere, countQueryParams),
-        countQueryParams.cityId
-          ? this.findCityEntityById(countQueryParams.cityId)
-          : Promise.resolve(null),
-      ]);
-
-    const totalEntregas = adminDeliveries.length;
-    const valorAdminPorEntrega = this.getAdminDeliveryFeeValue(city);
+    const [pending, assigned, waitingRelease] = await Promise.all([
+      this.deliveryRepository.count(pendingWhere),
+      this.deliveryRepository.count(assignedWhere),
+      this.deliveryRepository.count(waitingReleaseWhere),
+    ]);
 
     return {
       pending,
       assigned,
       waitingRelease,
-      totalEntregas,
-      valorAdminPorEntrega,
-      totalValorAdmin: totalEntregas * valorAdminPorEntrega,
-      cityId: city?.id?.toHexString?.() ?? countQueryParams.cityId ?? null,
-      cityName: city?.name ?? null,
     };
   }
 
-  private buildAssignedDeliveriesWhere(
-    userForRequest: UserEntity,
-    queryParams: ListDeliveriesQueryDTO = {} as ListDeliveriesQueryDTO,
-  ) {
+  private buildAssignedDeliveriesWhere(userForRequest: UserEntity) {
     const where: Record<string, any> = {
       isActive: true,
       motoboy: { $ne: null },
@@ -856,7 +754,11 @@ export class DeliveryService implements OnModuleInit {
       },
     };
 
-    this.applyCityWhere(userForRequest, where, queryParams.cityId);
+    if (userForRequest.type !== UserType.SUPERADMIN) {
+      where['establishment.cityId'] = userForRequest.cityId;
+    } else if (userForRequest.cityId) {
+      where['establishment.cityId'] = userForRequest.cityId;
+    }
 
     if (userForRequest.type === UserType.MOTOBOY) {
       where['motoboy.id'] = userForRequest.id;
@@ -870,67 +772,6 @@ export class DeliveryService implements OnModuleInit {
     }
 
     return where;
-  }
-
-  private applyDashboardCityFilter(
-    userForRequest: UserEntity,
-    queryParams: ListDeliveriesQueryDTO,
-  ): ListDeliveriesQueryDTO {
-    const cityId =
-      userForRequest.type === UserType.SUPERADMIN
-        ? queryParams.cityId || userForRequest.cityId || undefined
-        : userForRequest.cityId || undefined;
-
-    return { ...queryParams, cityId };
-  }
-
-  private applyCityWhere(
-    userForRequest: UserEntity,
-    where: Record<string, any>,
-    selectedCityId?: string,
-  ) {
-    if (userForRequest.type !== UserType.SUPERADMIN) {
-      where['establishment.cityId'] = userForRequest.cityId;
-      return;
-    }
-
-    const cityId = selectedCityId || userForRequest.cityId;
-    if (cityId) {
-      where['establishment.cityId'] = cityId;
-    }
-  }
-
-  private async findDashboardDeliveries(
-    where: Record<string, any>,
-    queryParams: ListDeliveriesQueryDTO,
-  ) {
-    const deliveries = await this.deliveryRepository.find({
-      relations: { motoboy: true, establishment: true },
-      where,
-    });
-
-    if (!queryParams.createdIn && !queryParams.createdUntil) {
-      return deliveries;
-    }
-
-    return deliveries.filter((delivery) =>
-      this.isDeliveryInsideReportDateFilter(delivery, queryParams),
-    );
-  }
-
-  private async findCityEntityById(cityId: string) {
-    if (!cityId || !ObjectId.isValid(cityId)) {
-      return null;
-    }
-
-    return this.cityRepository.findOne({
-      where: { _id: new ObjectId(cityId) },
-    });
-  }
-
-  private getAdminDeliveryFeeValue(city: CityEntity | null) {
-    const value = Number(city?.deliveryFeeValue);
-    return Number.isFinite(value) ? value : 0;
   }
 
   private parseBooleanQuery(value?: boolean | string) {
@@ -953,9 +794,8 @@ export class DeliveryService implements OnModuleInit {
   ) {
     const [userFinded, deliveryFinded] = await Promise.all([
       this.findOneUserById(user.id),
-      this.deliveryRepository.findOneOrFail({
-        where: { id: deliveryId },
-        relations: { motoboy: true, establishment: true },
+      this.deliveryRepository.findOneByOrFail({
+        id: deliveryId,
       }),
     ]);
 
@@ -970,13 +810,13 @@ export class DeliveryService implements OnModuleInit {
 
     let changedDelivery: Record<string, any> = {};
 
-    const isAdminUser = this.isAdminOrSuperAdmin(userFinded);
+    const isAdminUser =
+      userFinded.type === UserType.ADMIN ||
+      userFinded.type === UserType.SUPERADMIN;
 
-    const isShopkeeperUser = this.isShopkeeperUser(userFinded);
-
-    if (deliveryData.status) {
-      this.validateStoreCanUpdateDeliveryStatus(userFinded, deliveryFinded);
-    }
+    const isShopkeeperUser =
+      userFinded.type === UserType.SHOPKEEPER ||
+      userFinded.type === UserType.SHOPKEEPERADMIN;
 
     if (isAdminUser || isShopkeeperUser) {
       changedDelivery = { ...deliveryFinded, ...deliveryData };
@@ -1549,7 +1389,7 @@ export class DeliveryService implements OnModuleInit {
         id: deliveryId,
         isActive: true,
       },
-      relations: { establishment: true, motoboy: true },
+      relations: { establishment: true },
     });
 
     if (!deliveryFinded) {
@@ -1567,8 +1407,6 @@ export class DeliveryService implements OnModuleInit {
     ) {
       throw new BadRequestException('Você não é o dono dessa entrega.');
     }
-
-    this.ensureShopkeeperCanCancelDelivery(userFinded, deliveryFinded);
 
     const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
       deliveryFinded.id,
@@ -2203,94 +2041,6 @@ export class DeliveryService implements OnModuleInit {
     console.log('=== FIM NOTIFICAÇÃO DE NOVO PEDIDO (MOTOBOYS/ADMINS) ===');
   }
 
-  private parseReportDateFilter(dateValue: string, endOfDay = false): Date {
-    const onlyDate = /^\d{4}-\d{2}-\d{2}$/.test(dateValue);
-
-    if (onlyDate) {
-      const [year, month, day] = dateValue.split('-').map(Number);
-
-      return new Date(
-        year,
-        month - 1,
-        day,
-        endOfDay ? 23 : 0,
-        endOfDay ? 59 : 0,
-        endOfDay ? 59 : 0,
-        endOfDay ? 999 : 0,
-      );
-    }
-
-    const parsedDate = new Date(dateValue);
-
-    if (Number.isNaN(parsedDate.getTime())) {
-      throw new BadRequestException('Data inválida no filtro de relatório.');
-    }
-
-    return parsedDate;
-  }
-
-  private normalizeReportDateToYmd(
-    value?: Date | string | null,
-  ): string | null {
-    if (!value) return null;
-
-    if (value instanceof Date) {
-      return value.toISOString().slice(0, 10);
-    }
-
-    const textValue = String(value).trim();
-
-    const isoDateMatch = textValue.match(/^\d{4}-\d{2}-\d{2}/);
-    if (isoDateMatch) {
-      return isoDateMatch[0];
-    }
-
-    const parsedDate = new Date(textValue);
-    if (Number.isNaN(parsedDate.getTime())) {
-      return null;
-    }
-
-    return parsedDate.toISOString().slice(0, 10);
-  }
-
-  private isDeliveryInsideReportDateFilter(
-    delivery: DeliveryEntity,
-    queryParams: ListDeliveriesQueryDTO,
-  ): boolean {
-    const selectedStatuses = queryParams.status
-      ? queryParams.status.split(',')
-      : [];
-
-    const shouldUseFinishedAt =
-      selectedStatuses.length > 0 &&
-      selectedStatuses.every((status) => status === StatusDelivery.FINISHED);
-
-    const dateValue = shouldUseFinishedAt
-      ? delivery.finishedAt || delivery.updatedAt || delivery.createdAt
-      : delivery.createdAt;
-
-    const deliveryDate = this.normalizeReportDateToYmd(dateValue);
-
-    if (!deliveryDate) return false;
-
-    const startDate = this.normalizeReportDateToYmd(
-      queryParams.createdIn || null,
-    );
-    const endDate = this.normalizeReportDateToYmd(
-      queryParams.createdUntil || queryParams.createdIn || null,
-    );
-
-    if (startDate && deliveryDate < startDate) {
-      return false;
-    }
-
-    if (endDate && deliveryDate > endDate) {
-      return false;
-    }
-
-    return true;
-  }
-
   private buildDeliveriesWhere(
     userForRequest: UserEntity,
     queryParams: ListDeliveriesQueryDTO,
@@ -2303,7 +2053,11 @@ export class DeliveryService implements OnModuleInit {
       isActive: includeCanceled ? { $in: [true, false] } : true,
     };
 
-    this.applyCityWhere(userForRequest, where, queryParams.cityId);
+    if (userForRequest.type !== UserType.SUPERADMIN) {
+      where['establishment.cityId'] = userForRequest.cityId;
+    } else if (userForRequest.cityId) {
+      where['establishment.cityId'] = userForRequest.cityId;
+    }
 
     if (
       userForRequest.type === UserType.ADMIN ||
@@ -2351,7 +2105,22 @@ export class DeliveryService implements OnModuleInit {
     //   where['isActive'] = queryParams.isActive ? true : false;
     // }
 
-    // O filtro de data dos relatórios é aplicado em memória no listDeliveries.
+    if (queryParams.createdIn && queryParams.createdUntil) {
+      const createdAtDateFilter = {
+        $gte: new Date(queryParams.createdIn),
+        $lte: new Date(queryParams.createdUntil),
+      };
+      const createdAtStringFilter = {
+        $gte: queryParams.createdIn,
+        $lte: queryParams.createdUntil,
+      };
+
+      // Garante compatibilidade: aceita registros Date (novos) e string (legados).
+      where['$or'] = [
+        { createdAt: createdAtDateFilter },
+        { createdAt: createdAtStringFilter },
+      ];
+    }
 
     return where;
   }
