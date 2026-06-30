@@ -9,6 +9,9 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { utilities as nestWinstonUtilities, WinstonModule } from 'nest-winston';
 import * as winston from 'winston';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './shared/filters/all-exceptions.filter';
+
+registerProcessSafetyHandlers();
 
 async function bootstrap() {
   const options = createNestOptions();
@@ -19,10 +22,7 @@ async function bootstrap() {
 
   app.enableCors({
     origin: (origin, callback) => {
-      const localOrigins = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-      ];
+      const localOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
       const envOrigins = (process.env.FRONTEND_URLS || '')
         .split(',')
@@ -50,9 +50,53 @@ async function bootstrap() {
   });
 
   setupGlobalPipes(app);
+  app.useGlobalFilters(new AllExceptionsFilter());
+  setupExpressFallbackErrorHandler(app);
   setupSwaggerModule(app, configService);
 
-  await app.listen(configService.get<number>('PORT') || 3000);
+  const port = configService.get<number>('PORT') || 3000;
+  await app.listen(port);
+  console.log(`Servidor iniciado na porta ${port}.`);
+}
+
+function setupExpressFallbackErrorHandler(app: INestApplication) {
+  app.use((error: any, request: any, response: any, next: any) => {
+    if (!error) {
+      return next();
+    }
+
+    console.error(
+      `Erro Express tratado sem encerrar o processo: ${request?.method} ${request?.url} - ${error?.message || error}`,
+      error?.stack,
+    );
+
+    if (response.headersSent) {
+      return next(error);
+    }
+
+    return response.status(500).json({
+      statusCode: 500,
+      message: 'Erro interno do servidor.',
+      timestamp: new Date().toISOString(),
+      path: request?.url,
+    });
+  });
+}
+
+function registerProcessSafetyHandlers() {
+  process.on('unhandledRejection', (reason) => {
+    console.error(
+      'Unhandled rejection capturada sem encerrar o processo principal:',
+      reason,
+    );
+  });
+
+  process.on('uncaughtException', (error) => {
+    console.error(
+      'Uncaught exception capturada sem encerrar o processo principal:',
+      error,
+    );
+  });
 }
 
 function createNestOptions(): NestApplicationOptions {
@@ -97,4 +141,6 @@ function setupSwaggerModule(app: INestApplication, config: ConfigService) {
   SwaggerModule.setup('api/swagger', app, document);
 }
 
-bootstrap();
+bootstrap().catch((error) => {
+  console.error('Falha crítica durante bootstrap da aplicação:', error);
+});
