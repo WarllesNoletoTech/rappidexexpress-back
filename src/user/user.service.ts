@@ -67,11 +67,7 @@ export class UserService {
     const salt = await bcrypt.genSalt();
     const passHash = await bcrypt.hash(data.password, salt);
 
-    const phone = data.phone
-      .replace('(', '')
-      .replace(')', '')
-      .replace('-', '')
-      .replace(' ', '');
+    const phone = this.normalizePhone(data.phone);
 
     const city = await this.resolveCity(data.cityId, requester);
     const useIfoodIntegration = Boolean(data.useIfoodIntegration);
@@ -224,11 +220,16 @@ export class UserService {
       const ifoodMerchants = this.normalizeIfoodMerchants(
         data.ifoodMerchants ?? userToUpdate.ifoodMerchants,
       );
+      const phone =
+        data.phone !== undefined
+          ? this.normalizePhone(data.phone) || userToUpdate.phone
+          : userToUpdate.phone;
 
       const changedUser = await this.userRepository.save({
         ...userToUpdate,
         ...data,
         cityId,
+        phone,
         useIfoodIntegration,
         usesExternalIfoodPdv,
         ifoodMerchantId,
@@ -262,6 +263,16 @@ export class UserService {
     } catch (error) {
       throw error;
     }
+  }
+
+  private normalizePhone(phone?: string) {
+    const digits = String(phone ?? '').replace(/\D/g, '');
+
+    if (digits.length === 11 && !digits.startsWith('55')) {
+      return `55${digits}`;
+    }
+
+    return digits;
   }
 
   private triggerIfoodInitialSync(
@@ -619,6 +630,34 @@ export class UserService {
       await this.logRepository.save(newLogError);
       throw error;
     }
+  }
+
+
+  async unblockUser(id: string, requestUser: UserRequest) {
+    const requester = await this.findUserOrFail(requestUser.id);
+    const userToUnblock = await this.findUserOrFail(id);
+
+    this.ensureCityAccess(requester, userToUnblock.cityId);
+
+    if (
+      requester.type !== UserType.ADMIN &&
+      requester.type !== UserType.SUPERADMIN
+    ) {
+      throw new UnauthorizedException(
+        'Você não tem permissão para desbloquear usuários.',
+      );
+    }
+
+    const changedUser = await this.userRepository.save({
+      ...userToUnblock,
+      blocked: false,
+      blockedReason: null,
+      unblockedAt: addHours(new Date(), -3),
+      unblockedBy: requester.id,
+      updatedAt: addHours(new Date(), -3),
+    });
+
+    return UserResult.fromEntity(changedUser);
   }
 
   async deleteUser(id: string, requestUser: UserRequest) {

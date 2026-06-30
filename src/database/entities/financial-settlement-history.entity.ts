@@ -33,12 +33,15 @@ export class FinancialSettlementHistoryEntity {
   @Column()
   total: number;
 
+<<<<<<< HEAD
   @Column({ nullable: true })
   includeMonthlyFee?: boolean;
 
   @Column({ nullable: true })
   monthlyFeeValue?: number;
 
+=======
+>>>>>>> parent of 5803b8a (revert)
   @Column()
   pixKey: string;
 

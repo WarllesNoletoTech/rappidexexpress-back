@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Length } from 'class-validator';
+import { IsNumber, IsOptional, IsString, Length } from 'class-validator';
 
 export class UpdateCityDto {
   @IsString()
@@ -14,6 +14,9 @@ export class UpdateCityDto {
   @IsOptional()
   clientWhatsappMessage?: string;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> parent of 5803b8a (revert)
 
   @IsString()
   @IsOptional()
@@ -23,10 +26,13 @@ export class UpdateCityDto {
   @IsOptional()
   deliveryFeeValue?: number;
 
+<<<<<<< HEAD
   @IsNumber()
   @IsOptional()
   monthlyFeeValue?: number;
 
+=======
+>>>>>>> parent of 5803b8a (revert)
   @IsString()
   @IsOptional()
   pixKey?: string;
@@ -43,6 +49,9 @@ export class UpdateCityDto {
   @IsOptional()
   whatsappCloudToken?: string;
 }
+<<<<<<< HEAD
 =======
 }
 >>>>>>> parent of 613ac8c (atualização front)
+=======
+>>>>>>> parent of 5803b8a (revert)

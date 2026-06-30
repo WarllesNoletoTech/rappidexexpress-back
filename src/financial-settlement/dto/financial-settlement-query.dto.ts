@@ -13,8 +13,11 @@ export class FinancialSettlementQueryDto {
   @IsString()
   @IsOptional()
   status?: string;
+<<<<<<< HEAD
 
   @IsString()
   @IsOptional()
   includeMonthlyFee?: string;
+=======
+>>>>>>> parent of 5803b8a (revert)
 }
