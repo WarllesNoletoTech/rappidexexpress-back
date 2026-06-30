@@ -14,6 +14,7 @@ export class CityResult {
   @Expose()
   clientWhatsappMessage?: string;
 
+<<<<<<< HEAD
   @Expose()
   deliveryValue?: string;
 
@@ -35,12 +36,15 @@ export class CityResult {
   @Expose()
   whatsappCloudTokenConfigured?: boolean;
 
+=======
+>>>>>>> parent of 613ac8c (atualização front)
   static fromEntity(city: CityEntity): CityResult {
     return plainToClass(CityResult, {
       id: city.id?.toHexString?.() ?? `${city.id}`,
       name: city.name,
       state: city.state,
       clientWhatsappMessage: city.clientWhatsappMessage,
+<<<<<<< HEAD
       deliveryValue: city.deliveryValue,
       deliveryFeeValue: city.deliveryFeeValue,
       monthlyFeeValue: city.monthlyFeeValue,
@@ -50,6 +54,8 @@ export class CityResult {
       whatsappCloudTokenConfigured: Boolean(
         String(city.whatsappCloudToken ?? '').trim(),
       ),
+=======
+>>>>>>> parent of 613ac8c (atualização front)
     });
   }
 }

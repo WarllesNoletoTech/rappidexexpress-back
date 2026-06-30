@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString, Length } from 'class-validator';
+import { IsOptional, IsString, Length } from 'class-validator';
 
 export class CreateCityDto {
   @IsString()
@@ -12,6 +12,7 @@ export class CreateCityDto {
   @IsString()
   @IsOptional()
   clientWhatsappMessage?: string;
+<<<<<<< HEAD
 
   @IsString()
   @IsOptional()
@@ -41,3 +42,6 @@ export class CreateCityDto {
   @IsOptional()
   whatsappCloudToken?: string;
 }
+=======
+}
+>>>>>>> parent of 613ac8c (atualização front)

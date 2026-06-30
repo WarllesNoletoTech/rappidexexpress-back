@@ -67,15 +67,16 @@ export class UserService {
     const salt = await bcrypt.genSalt();
     const passHash = await bcrypt.hash(data.password, salt);
 
-    const phone = this.normalizePhone(data.phone);
+    const phone = data.phone
+      .replace('(', '')
+      .replace(')', '')
+      .replace('-', '')
+      .replace(' ', '');
 
     const city = await this.resolveCity(data.cityId, requester);
     const useIfoodIntegration = Boolean(data.useIfoodIntegration);
     const usesExternalIfoodPdv = useIfoodIntegration
       ? Boolean(data.usesExternalIfoodPdv)
-      : false;
-    const ifoodWithoutPreparationTime = useIfoodIntegration
-      ? Boolean(data.ifoodWithoutPreparationTime)
       : false;
     const ifoodMerchants = this.normalizeIfoodMerchants(data.ifoodMerchants);
     const ifoodMerchantId = useIfoodIntegration
@@ -91,7 +92,6 @@ export class UserService {
         password: passHash,
         useIfoodIntegration,
         usesExternalIfoodPdv,
-        ifoodWithoutPreparationTime,
         ifoodMerchantId,
         ifoodMerchants,
         ifoodClientId: '',
@@ -110,7 +110,6 @@ export class UserService {
         ifoodMerchantsChanged: true,
         isActiveChanged: true,
         usesExternalIfoodPdvChanged: true,
-        ifoodWithoutPreparationTimeChanged: true,
       });
 
       return UserResult.fromEntity(newUser);
@@ -212,13 +211,6 @@ export class UserService {
       const usesExternalIfoodPdv = useIfoodIntegration
         ? (data.usesExternalIfoodPdv ?? userToUpdate.usesExternalIfoodPdv ?? false)
         : false;
-      const ifoodWithoutPreparationTime = useIfoodIntegration
-        ? (
-            data.ifoodWithoutPreparationTime ??
-            userToUpdate.ifoodWithoutPreparationTime ??
-            false
-          )
-        : false;
 
       const ifoodMerchantId = useIfoodIntegration
         ? (
@@ -232,19 +224,13 @@ export class UserService {
       const ifoodMerchants = this.normalizeIfoodMerchants(
         data.ifoodMerchants ?? userToUpdate.ifoodMerchants,
       );
-      const phone =
-        data.phone !== undefined
-          ? this.normalizePhone(data.phone) || userToUpdate.phone
-          : userToUpdate.phone;
 
       const changedUser = await this.userRepository.save({
         ...userToUpdate,
         ...data,
         cityId,
-        phone,
         useIfoodIntegration,
         usesExternalIfoodPdv,
-        ifoodWithoutPreparationTime,
         ifoodMerchantId,
         ifoodMerchants,
         ifoodClientId: '',
@@ -270,25 +256,12 @@ export class UserService {
           Boolean(changedUser.isActive) !== Boolean(userToUpdate.isActive),
         usesExternalIfoodPdvChanged:
           usesExternalIfoodPdv !== Boolean(userToUpdate.usesExternalIfoodPdv),
-        ifoodWithoutPreparationTimeChanged:
-          ifoodWithoutPreparationTime !==
-          Boolean(userToUpdate.ifoodWithoutPreparationTime),
       });
 
       return UserResult.fromEntity(changedUser);
     } catch (error) {
       throw error;
     }
-  }
-
-  private normalizePhone(phone?: string) {
-    const digits = String(phone ?? '').replace(/\D/g, '');
-
-    if (digits.length === 11 && !digits.startsWith('55')) {
-      return `55${digits}`;
-    }
-
-    return digits;
   }
 
   private triggerIfoodInitialSync(
@@ -298,7 +271,6 @@ export class UserService {
       ifoodMerchantIdChanged: boolean;
       isActiveChanged: boolean;
       usesExternalIfoodPdvChanged: boolean;
-      ifoodWithoutPreparationTimeChanged: boolean;
       ifoodMerchantsChanged: boolean;
     },
   ) {
@@ -306,8 +278,7 @@ export class UserService {
       changes.useIfoodIntegrationChanged ||
       changes.ifoodMerchantIdChanged ||
       changes.isActiveChanged ||
-      changes.usesExternalIfoodPdvChanged ||
-      changes.ifoodWithoutPreparationTimeChanged;
+      changes.usesExternalIfoodPdvChanged;
     const hasMerchantsChanged = changes.ifoodMerchantsChanged;
 
     if (!hasRelevantChange && !hasMerchantsChanged) {
@@ -648,34 +619,6 @@ export class UserService {
       await this.logRepository.save(newLogError);
       throw error;
     }
-  }
-
-
-  async unblockUser(id: string, requestUser: UserRequest) {
-    const requester = await this.findUserOrFail(requestUser.id);
-    const userToUnblock = await this.findUserOrFail(id);
-
-    this.ensureCityAccess(requester, userToUnblock.cityId);
-
-    if (
-      requester.type !== UserType.ADMIN &&
-      requester.type !== UserType.SUPERADMIN
-    ) {
-      throw new UnauthorizedException(
-        'Você não tem permissão para desbloquear usuários.',
-      );
-    }
-
-    const changedUser = await this.userRepository.save({
-      ...userToUnblock,
-      blocked: false,
-      blockedReason: null,
-      unblockedAt: addHours(new Date(), -3),
-      unblockedBy: requester.id,
-      updatedAt: addHours(new Date(), -3),
-    });
-
-    return UserResult.fromEntity(changedUser);
   }
 
   async deleteUser(id: string, requestUser: UserRequest) {

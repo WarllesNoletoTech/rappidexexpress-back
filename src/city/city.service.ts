@@ -13,6 +13,7 @@ export class CityService {
     private readonly cityRepository: MongoRepository<CityEntity>,
   ) {}
 
+<<<<<<< HEAD
   private normalizeCurrencyValue(value?: number | string): number | undefined {
     if (value === undefined || value === null || value === '') {
       return undefined;
@@ -26,18 +27,21 @@ export class CityService {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
 
+=======
+>>>>>>> parent of 613ac8c (atualização front)
   async listCities(): Promise<CityResult[]> {
-    const cities = await this.cityRepository.find({
-      order: { name: 'ASC' },
-    });
-    return cities.map(CityResult.fromEntity);
+      const cities = await this.cityRepository.find({
+        order: { name: 'ASC' },
+      });
+      return cities.map(CityResult.fromEntity);
   }
 
-  async createCity(data: CreateCityDto): Promise<CityResult> {
+    async createCity(data: CreateCityDto): Promise<CityResult> {
     const city = await this.cityRepository.save({
       name: data.name,
       state: data.state,
       clientWhatsappMessage: data.clientWhatsappMessage?.trim() || '',
+<<<<<<< HEAD
       deliveryValue: data.deliveryValue?.trim() || '',
       deliveryFeeValue: this.normalizeCurrencyValue(data.deliveryFeeValue),
       monthlyFeeValue: this.normalizeCurrencyValue(data.monthlyFeeValue),
@@ -45,12 +49,15 @@ export class CityService {
       adminWhatsapp: data.adminWhatsapp?.trim() || '',
       whatsappPhoneNumberId: data.whatsappPhoneNumberId?.trim() || '',
       whatsappCloudToken: data.whatsappCloudToken?.trim() || '',
+=======
+>>>>>>> parent of 613ac8c (atualização front)
     });
 
     return CityResult.fromEntity(city);
   }
 
   async findCity(cityId: string): Promise<CityResult> {
+
     const city = await this.cityRepository.findOne({
       where: { _id: new ObjectId(cityId) },
     });
@@ -78,6 +85,7 @@ export class CityService {
         data.clientWhatsappMessage !== undefined
           ? data.clientWhatsappMessage.trim()
           : city.clientWhatsappMessage,
+<<<<<<< HEAD
       deliveryValue:
         data.deliveryValue !== undefined
           ? data.deliveryValue.trim()
@@ -103,6 +111,8 @@ export class CityService {
         data.whatsappCloudToken !== undefined && data.whatsappCloudToken.trim()
           ? data.whatsappCloudToken.trim()
           : city.whatsappCloudToken,
+=======
+>>>>>>> parent of 613ac8c (atualização front)
     });
 
     return CityResult.fromEntity(updatedCity);

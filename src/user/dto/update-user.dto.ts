@@ -67,10 +67,6 @@ export class UpdateUserDto {
   @IsOptional()
   usesExternalIfoodPdv?: boolean;
 
-  @IsBoolean()
-  @IsOptional()
-  ifoodWithoutPreparationTime?: boolean;
-
   @IsString()
   @IsOptional()
   ifoodMerchantId?: string;

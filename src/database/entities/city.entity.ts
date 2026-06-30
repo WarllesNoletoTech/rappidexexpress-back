@@ -14,6 +14,7 @@ export class CityEntity {
 
   @Column({ nullable: true })
   clientWhatsappMessage?: string;
+<<<<<<< HEAD
 
   @Column({ nullable: true })
   deliveryValue?: string;
@@ -36,3 +37,6 @@ export class CityEntity {
   @Column({ nullable: true })
   whatsappCloudToken?: string;
 }
+=======
+}
+>>>>>>> parent of 613ac8c (atualização front)
