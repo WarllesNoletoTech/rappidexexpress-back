@@ -51,6 +51,24 @@ export class UserEntity {
   @Column()
   isActive: boolean;
 
+  @Column({ default: false })
+  blocked: boolean;
+
+  @Column({ nullable: true })
+  blockedReason?: string;
+
+  @Column({ nullable: true })
+  blockedAt?: Date;
+
+  @Column({ default: false })
+  blockedBySystem: boolean;
+
+  @Column({ nullable: true })
+  unblockedAt?: Date;
+
+  @Column({ nullable: true })
+  unblockedBy?: string;
+
   @Column()
   notification: {
     subscriptionId: string;
@@ -69,6 +87,9 @@ export class UserEntity {
 
   @Column({ default: false })
   usesExternalIfoodPdv: boolean;
+
+  @Column({ default: false })
+  ifoodWithoutPreparationTime: boolean;
 
   @Column({ nullable: true })
   ifoodMerchantId?: string;
