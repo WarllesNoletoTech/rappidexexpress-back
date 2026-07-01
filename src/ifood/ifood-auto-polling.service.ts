@@ -100,6 +100,19 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
         await this.ifoodPollingService.pollEventsWithMetadata();
       const allEvents = Array.isArray(events) ? events : [];
       this.metrics.eventsReceived += allEvents.length;
+      const polledAckTargets = Array.from(
+        new Map(
+          allEvents
+            .map((event) => ({
+              id: String(event?.id || '').trim(),
+              merchantId: String(event?.merchantId || '').trim(),
+            }))
+            .filter((event) => Boolean(event.id))
+            .map((event) => [event.id, event]),
+        ).values(),
+      );
+      const polledEventIds = polledAckTargets.map((event) => event.id);
+
       this.logger.log(
         `Polling executado com sucesso. Eventos encontrados: ${allEvents.length}`,
       );
@@ -112,30 +125,22 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
 
       const freshEvents: any[] = [];
       const pendingAckEvents: any[] = [];
-      const persistedAckTargetsById = new Map<string, { id: string; merchantId?: string }>();
 
       for (const event of allEvents) {
-        const eventId = String(event?.id || '').trim();
-
-        if (!eventId) {
+        if (!event?.id) {
           continue;
         }
 
         const existingEvent = await this.ifoodEventService.findByEventId(
-          eventId,
+          event.id,
         );
-
-        await this.ifoodEventService.markAsProcessed(event, false);
-        persistedAckTargetsById.set(eventId, {
-          id: eventId,
-          merchantId: String(event?.merchantId || '').trim(),
-        });
 
         if (!existingEvent) {
           freshEvents.push(event);
+          continue;
         }
 
-        if (existingEvent && !existingEvent.acknowledged) {
+        if (!existingEvent.acknowledged) {
           pendingAckEvents.push(event);
         }
       }
@@ -145,11 +150,44 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
       );
 
       this.logger.log(
-        `Eventos persistidos e pendentes de ACK neste ciclo: ${pendingAckEvents.length + freshEvents.length}`,
+        `Eventos pendentes de ACK neste ciclo: ${pendingAckEvents.length}`,
       );
       const eligibleEvents = freshEvents.filter(
         (event) =>
           this.ifoodImportService.isEligibleImportEvent?.(event) === true,
+      );
+
+      if (polledAckTargets.length > 0) {
+        await this.ackWithDeadlineAndFallback(polledAckTargets);
+        this.metrics.eventsAcked += polledEventIds.length;
+        this.metrics.pollingToAckMs.push(Date.now() - cycleStartedAt);
+
+        for (const eventId of polledEventIds) {
+          await this.ifoodEventService.markAsAcknowledged(eventId);
+        }
+      }
+
+      const localPendingAckEvents =
+        await this.ifoodEventService.findUnacknowledgedEvents();
+      const pendingRetryAckTargets = localPendingAckEvents
+        .filter((event) => !polledEventIds.includes(event.eventId))
+        .map((event) => ({
+          id: event.eventId,
+          merchantId: event.merchantId,
+        }));
+      const pendingRetryIds = pendingRetryAckTargets.map((event) => event.id);
+
+      if (pendingRetryAckTargets.length > 0) {
+        await this.ackWithDeadlineAndFallback(pendingRetryAckTargets);
+        this.metrics.eventsAcked += pendingRetryAckTargets.length;
+
+        for (const eventId of pendingRetryIds) {
+          await this.ifoodEventService.markAsAcknowledged(eventId);
+        }
+      }
+
+      this.logger.log(
+        `ACK enviado ao iFood e confirmado localmente: ${polledEventIds.length + pendingRetryIds.length}`,
       );
 
       const cancellationEvents = freshEvents.filter(
@@ -211,45 +249,13 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
           );
         }
         await this.ifoodImportService.importFromEvents(freshEvents);
+
+        for (const event of freshEvents) {
+          await this.ifoodEventService.markAsProcessed(event, true);
+        }
       }
       await this.ifoodImportService.retryPendingImportsForActiveMerchants?.(
         150,
-      );
-
-      const persistedAckTargets = Array.from(persistedAckTargetsById.values());
-
-      if (persistedAckTargets.length > 0) {
-        await this.ackWithDeadlineAndFallback(persistedAckTargets);
-        this.metrics.eventsAcked += persistedAckTargets.length;
-        this.metrics.pollingToAckMs.push(Date.now() - cycleStartedAt);
-
-        for (const event of persistedAckTargets) {
-          await this.ifoodEventService.markAsAcknowledged(event.id);
-        }
-      }
-
-      const acknowledgedPolledIds = persistedAckTargets.map((event) => event.id);
-      const localPendingAckEvents =
-        await this.ifoodEventService.findUnacknowledgedEvents();
-      const pendingRetryAckTargets = localPendingAckEvents
-        .filter((event) => !acknowledgedPolledIds.includes(event.eventId))
-        .map((event) => ({
-          id: event.eventId,
-          merchantId: event.merchantId,
-        }));
-      const pendingRetryIds = pendingRetryAckTargets.map((event) => event.id);
-
-      if (pendingRetryAckTargets.length > 0) {
-        await this.ackWithDeadlineAndFallback(pendingRetryAckTargets);
-        this.metrics.eventsAcked += pendingRetryAckTargets.length;
-
-        for (const eventId of pendingRetryIds) {
-          await this.ifoodEventService.markAsAcknowledged(eventId);
-        }
-      }
-
-      this.logger.log(
-        `ACK enviado ao iFood após persistência/processamento local: ${persistedAckTargets.length + pendingRetryIds.length}`,
       );
 
       const uniqueMerchants = Array.from(
@@ -267,7 +273,8 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
     } catch (error: any) {
       this.captureHttpErrorMetrics(error);
       this.logger.error(
-        `Erro no polling automático do iFood: ${error?.message || error}`,
+        `Erro no polling automático/importação iFood. httpStatus=${error?.response?.status || error?.status || 'N/A'} mongoCode=${error?.code || 'N/A'} mongoCodeName=${error?.codeName || 'N/A'} keyPattern=${JSON.stringify(error?.keyPattern || {})} keyValue=${JSON.stringify(error?.keyValue || {})} message=${error?.response?.data?.message || error?.message || error}`,
+        error?.stack,
       );
     } finally {
       this.isPollingCycleRunning = false;

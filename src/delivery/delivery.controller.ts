@@ -10,6 +10,8 @@ import {
   Query,
   UnauthorizedException,
   UseGuards,
+  Logger,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { DeliveryService } from './delivery.service';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -35,6 +37,8 @@ import {
 
 @Controller('delivery')
 export class DeliveryController {
+  private readonly logger = new Logger(DeliveryController.name);
+
   constructor(private deliveryService: DeliveryService) {}
 
   @Post()
@@ -90,7 +94,11 @@ export class DeliveryController {
     @User() user: UserRequest,
     @Body() data: ReleaseDeliveryDto,
   ) {
-    return await this.deliveryService.releaseDelivery(param.deliveryId, user, data);
+    return await this.deliveryService.releaseDelivery(
+      param.deliveryId,
+      user,
+      data,
+    );
   }
 
   @Get()
@@ -108,7 +116,15 @@ export class DeliveryController {
     @User() user: UserRequest,
     @Query() queryParams: ListDeliveriesQueryDTO,
   ) {
-    return await this.deliveryService.listDeliveries(user, queryParams);
+    try {
+      return await this.deliveryService.listDeliveries(user, queryParams);
+    } catch (error: any) {
+      this.logger.error(
+        `GET /api/delivery falhou. userId=${user?.id || 'N/A'} userType=${user?.type || 'N/A'} query=${JSON.stringify(queryParams || {})} message=${error?.message || error}`,
+        error?.stack,
+      );
+      throw error;
+    }
   }
 
   @Get('counts')
@@ -121,8 +137,35 @@ export class DeliveryController {
     description: 'Dashboard delivery counters.',
   })
   @UseGuards(JwtAuthGuard)
-  async getDashboardCounts(@User() user: UserRequest) {
-    return await this.deliveryService.getDashboardCounts(user);
+  async getDashboardCounts(
+    @User() user: UserRequest,
+    @Query() queryParams: ListDeliveriesQueryDTO,
+  ) {
+    this.logger.log(
+      `GET /api/delivery/counts userId=${user?.id || 'N/A'} userType=${
+        user?.type || 'N/A'
+      } cityId=${queryParams?.cityId || 'N/A'} createdIn=${
+        queryParams?.createdIn || 'N/A'
+      } createdUntil=${queryParams?.createdUntil || 'N/A'}`,
+    );
+
+    try {
+      return await this.deliveryService.getDashboardCounts(user, queryParams);
+    } catch (error: any) {
+      this.logger.error(
+        `GET /api/delivery/counts falhou. userId=${user?.id || 'N/A'} userType=${
+          user?.type || 'N/A'
+        } cityId=${queryParams?.cityId || 'N/A'} createdIn=${
+          queryParams?.createdIn || 'N/A'
+        } createdUntil=${queryParams?.createdUntil || 'N/A'} message=${
+          error?.message || error
+        }`,
+        error?.stack,
+      );
+      throw new InternalServerErrorException(
+        'Não foi possível carregar o contador de entregas.',
+      );
+    }
   }
 
   @Delete(':deliveryId')
@@ -146,7 +189,6 @@ export class DeliveryController {
     }
     return await this.deliveryService.deleteDelivery(param.deliveryId, user);
   }
-
 
   @Post('cleanup/ifood-stale')
   @UseGuards(JwtAuthGuard)
@@ -210,6 +252,9 @@ export class DeliveryController {
     @Param() param: DeliveryParamsDto,
     @User() user: UserRequest,
   ) {
-    return await this.deliveryService.markArrivedAtStore(param.deliveryId, user);
+    return await this.deliveryService.markArrivedAtStore(
+      param.deliveryId,
+      user,
+    );
   }
 }

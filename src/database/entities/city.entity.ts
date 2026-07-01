@@ -14,4 +14,25 @@ export class CityEntity {
 
   @Column({ nullable: true })
   clientWhatsappMessage?: string;
+
+  @Column({ nullable: true })
+  deliveryValue?: string;
+
+  @Column({ nullable: true })
+  deliveryFeeValue?: number;
+
+  @Column({ nullable: true })
+  monthlyFeeValue?: number;
+
+  @Column({ nullable: true })
+  pixKey?: string;
+
+  @Column({ nullable: true })
+  adminWhatsapp?: string;
+
+  @Column({ nullable: true })
+  whatsappPhoneNumberId?: string;
+
+  @Column({ nullable: true })
+  whatsappCloudToken?: string;
 }
