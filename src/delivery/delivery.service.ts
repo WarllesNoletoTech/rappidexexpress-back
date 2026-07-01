@@ -147,6 +147,47 @@ export class DeliveryService implements OnModuleInit {
     this.validateStoreCanUpdateDeliveryStatus(user, delivery);
   }
 
+  private async sendIfoodStatusUpdate<T>(params: {
+    deliveryId: string;
+    ifoodOrderId: string;
+    merchantId: string;
+    oldStatus?: StatusDelivery;
+    newStatus: StatusDelivery;
+    action: string;
+    request: () => Promise<T>;
+  }): Promise<T> {
+    const {
+      deliveryId,
+      ifoodOrderId,
+      merchantId,
+      oldStatus,
+      newStatus,
+      action,
+      request,
+    } = params;
+
+    this.logger.log(
+      `ifood_status_sync tentativa deliveryId=${deliveryId} ifoodOrderId=${ifoodOrderId} merchantId=${merchantId} statusAntigo=${oldStatus || 'N/A'} statusNovo=${newStatus} acao=${action}`,
+    );
+
+    try {
+      const response = await request();
+
+      this.logger.log(
+        `ifood_status_sync sucesso deliveryId=${deliveryId} ifoodOrderId=${ifoodOrderId} merchantId=${merchantId} statusAntigo=${oldStatus || 'N/A'} statusNovo=${newStatus} acao=${action} resposta=${JSON.stringify(response)}`,
+      );
+
+      return response;
+    } catch (error: any) {
+      this.logger.error(
+        `ifood_status_sync falha deliveryId=${deliveryId} ifoodOrderId=${ifoodOrderId} merchantId=${merchantId} statusAntigo=${oldStatus || 'N/A'} statusNovo=${newStatus} acao=${action} httpStatus=${error?.response?.status || error?.status || 'N/A'} resposta=${JSON.stringify(error?.response?.data || null)} erro=${error?.response?.data?.message || error?.message || error}`,
+        error?.stack || error,
+      );
+
+      throw error;
+    }
+  }
+
   private async syncIfoodOnCourseIfNeeded(
     previousDelivery: DeliveryEntity,
     nextDelivery: DeliveryEntity,
@@ -197,7 +238,16 @@ export class DeliveryService implements OnModuleInit {
     }
 
     if (!previousDelivery.ifoodAssignDriverSynced) {
-      await this.ifoodOrdersService.assignDriver(orderId, motoboy, merchantId);
+      await this.sendIfoodStatusUpdate({
+        deliveryId: previousDelivery.id,
+        ifoodOrderId: orderId,
+        merchantId,
+        oldStatus: previousDelivery.status,
+        newStatus: StatusDelivery.ONCOURSE,
+        action: 'assignDriver',
+        request: () =>
+          this.ifoodOrdersService.assignDriver(orderId, motoboy, merchantId),
+      });
       flags.ifoodAssignDriverSynced = true;
 
       this.logger.log(
@@ -206,7 +256,16 @@ export class DeliveryService implements OnModuleInit {
     }
 
     if (!previousDelivery.ifoodGoingToOriginSynced) {
-      await this.ifoodOrdersService.notifyGoingToOrigin(orderId, merchantId);
+      await this.sendIfoodStatusUpdate({
+        deliveryId: previousDelivery.id,
+        ifoodOrderId: orderId,
+        merchantId,
+        oldStatus: previousDelivery.status,
+        newStatus: StatusDelivery.ONCOURSE,
+        action: 'goingToOrigin',
+        request: () =>
+          this.ifoodOrdersService.notifyGoingToOrigin(orderId, merchantId),
+      });
       flags.ifoodGoingToOriginSynced = true;
 
       this.logger.log(
@@ -293,10 +352,19 @@ export class DeliveryService implements OnModuleInit {
         );
 
         if (!previousDelivery.ifoodArrivedAtOriginSynced) {
-          await this.ifoodOrdersService.notifyArrivedAtOrigin(
-            orderId,
+          await this.sendIfoodStatusUpdate({
+            deliveryId: previousDelivery.id,
+            ifoodOrderId: orderId,
             merchantId,
-          );
+            oldStatus: previousDelivery.status,
+            newStatus: StatusDelivery.ARRIVED_AT_STORE,
+            action: 'arrivedAtOrigin',
+            request: () =>
+              this.ifoodOrdersService.notifyArrivedAtOrigin(
+                orderId,
+                merchantId,
+              ),
+          });
           flags.ifoodArrivedAtOriginSynced = true;
           this.logger.log(
             `arrivedAtOrigin enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
@@ -315,10 +383,19 @@ export class DeliveryService implements OnModuleInit {
         );
 
         if (!previousDelivery.ifoodDispatchSynced) {
-          await this.ifoodOrdersService.dispatchLogisticsOrder(
-            orderId,
+          await this.sendIfoodStatusUpdate({
+            deliveryId: previousDelivery.id,
+            ifoodOrderId: orderId,
             merchantId,
-          );
+            oldStatus: previousDelivery.status,
+            newStatus: StatusDelivery.COLLECTED,
+            action: 'dispatch',
+            request: () =>
+              this.ifoodOrdersService.dispatchLogisticsOrder(
+                orderId,
+                merchantId,
+              ),
+          });
           flags.ifoodDispatchSynced = true;
           this.logger.log(
             `dispatch enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
@@ -333,10 +410,19 @@ export class DeliveryService implements OnModuleInit {
         nextStatus === StatusDelivery.AWAITING_CODE
       ) {
         if (!previousDelivery.ifoodArrivedAtDestinationSynced) {
-          await this.ifoodOrdersService.notifyArrivedAtDestination(
-            orderId,
+          await this.sendIfoodStatusUpdate({
+            deliveryId: previousDelivery.id,
+            ifoodOrderId: orderId,
             merchantId,
-          );
+            oldStatus: previousDelivery.status,
+            newStatus: nextStatus,
+            action: 'arrivedAtDestination',
+            request: () =>
+              this.ifoodOrdersService.notifyArrivedAtDestination(
+                orderId,
+                merchantId,
+              ),
+          });
           this.logger.log(
             `arrivedAtDestination enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
           );
