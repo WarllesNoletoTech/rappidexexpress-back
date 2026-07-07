@@ -24,6 +24,9 @@ export class UserEntity {
   @Column()
   phone: string;
 
+  @Column({ nullable: true })
+  managerWhatsapp?: string;
+
   @Column({ unique: true })
   user: string;
 

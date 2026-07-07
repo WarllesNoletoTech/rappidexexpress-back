@@ -78,7 +78,7 @@ export class FinancialSettlementService {
 
     if (!settlement.whatsapp) {
       throw new BadRequestException(
-        'Este lojista não possui WhatsApp cadastrado no perfil.',
+        'Cadastre o número do gerente para enviar o relatório.',
       );
     }
 
@@ -135,7 +135,7 @@ export class FinancialSettlementService {
       throw new NotFoundException('Lojista não encontrado.');
     }
 
-    const whatsapp = this.normalizeWhatsapp(establishment.phone);
+    const whatsapp = this.normalizeWhatsapp(establishment.managerWhatsapp);
 
     const deliveries = await this.deliveryRepository.find({
       where: {
@@ -444,7 +444,7 @@ export class FinancialSettlementService {
         'F2',
       );
       text(
-        `WhatsApp: ${settlement.whatsapp ? this.formatPhone(settlement.whatsapp) : 'Não cadastrado'}`,
+        `WhatsApp do gerente: ${settlement.whatsapp ? this.formatPhone(settlement.whatsapp) : 'Não cadastrado'}`,
         48,
         690,
       );

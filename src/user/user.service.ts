@@ -68,6 +68,7 @@ export class UserService {
     const passHash = await bcrypt.hash(data.password, salt);
 
     const phone = this.normalizePhone(data.phone);
+    const managerWhatsapp = this.normalizePhone(data.managerWhatsapp);
 
     const city = await this.resolveCity(data.cityId, requester);
     const useIfoodIntegration = Boolean(data.useIfoodIntegration);
@@ -88,6 +89,7 @@ export class UserService {
         ...data,
         cityId: city.id.toHexString(),
         phone,
+        managerWhatsapp,
         password: passHash,
         useIfoodIntegration,
         usesExternalIfoodPdv,
@@ -237,11 +239,17 @@ export class UserService {
           ? this.normalizePhone(data.phone) || userToUpdate.phone
           : userToUpdate.phone;
 
+      const managerWhatsapp =
+        data.managerWhatsapp !== undefined
+          ? this.normalizePhone(data.managerWhatsapp)
+          : userToUpdate.managerWhatsapp ?? '';
+
       const changedUser = await this.userRepository.save({
         ...userToUpdate,
         ...data,
         cityId,
         phone,
+        managerWhatsapp,
         useIfoodIntegration,
         usesExternalIfoodPdv,
         ifoodWithoutPreparationTime,
