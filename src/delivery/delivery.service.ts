@@ -846,9 +846,6 @@ export class DeliveryService implements OnModuleInit {
     const skip = (page - 1) * itemsPerPageParam;
     const take = itemsPerPageParam;
     const where = this.buildDeliveriesWhere(userForRequest, queryParams);
-    const sortField = this.shouldUseFinishedDateFilter(queryParams)
-      ? 'finishedAt'
-      : 'createdAt';
 
     const shouldIncludeDashboardCounts = this.parseBooleanQuery(
       queryParams.includeDashboardCounts,
@@ -865,7 +862,7 @@ export class DeliveryService implements OnModuleInit {
         where,
         skip,
         take,
-        order: { [sortField]: 'ASC', createdAt: 'ASC' } as any,
+        order: { createdAt: 'ASC' } as any,
       }),
       this.deliveryRepository.count(where),
       dashboardCountsPromise,
@@ -1051,38 +1048,10 @@ export class DeliveryService implements OnModuleInit {
   }
 
   private buildDashboardDateWhere(
-    status: StatusDelivery,
+    _status: StatusDelivery,
     dateRange: DashboardDateRange,
   ) {
-    if (status !== StatusDelivery.FINISHED) {
-      return { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
-    }
-
-    const missingFinishedAt = {
-      $or: [{ finishedAt: null }, { finishedAt: { $exists: false } }],
-    };
-    const missingUpdatedAt = {
-      $or: [{ updatedAt: null }, { updatedAt: { $exists: false } }],
-    };
-
-    return {
-      $or: [
-        { finishedAt: { $gte: dateRange.start, $lte: dateRange.end } },
-        {
-          $and: [
-            missingFinishedAt,
-            { updatedAt: { $gte: dateRange.start, $lte: dateRange.end } },
-          ],
-        },
-        {
-          $and: [
-            missingFinishedAt,
-            missingUpdatedAt,
-            { createdAt: { $gte: dateRange.start, $lte: dateRange.end } },
-          ],
-        },
-      ],
-    };
+    return { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
   }
 
   private getCurrentRappidexWeekYmdRange(referenceDate = new Date()) {
@@ -2535,19 +2504,6 @@ export class DeliveryService implements OnModuleInit {
     return parsedDate;
   }
 
-  private shouldUseFinishedDateFilter(
-    queryParams: ListDeliveriesQueryDTO,
-  ): boolean {
-    const selectedStatuses = queryParams.status
-      ? queryParams.status.split(',')
-      : [];
-
-    return (
-      selectedStatuses.length > 0 &&
-      selectedStatuses.every((status) => status === StatusDelivery.FINISHED)
-    );
-  }
-
   private buildReportDateRange(queryParams: ListDeliveriesQueryDTO) {
     if (!queryParams.createdIn && !queryParams.createdUntil) {
       return null;
@@ -2588,27 +2544,7 @@ export class DeliveryService implements OnModuleInit {
       dateRange.end,
     );
 
-    if (!this.shouldUseFinishedDateFilter(queryParams)) {
-      where.createdAt = rangeFilter;
-      return;
-    }
-
-    where.$or = [
-      { finishedAt: rangeFilter },
-      {
-        $and: [
-          { $or: [{ finishedAt: null }, { finishedAt: { $exists: false } }] },
-          { updatedAt: rangeFilter },
-        ],
-      },
-      {
-        $and: [
-          { $or: [{ finishedAt: null }, { finishedAt: { $exists: false } }] },
-          { $or: [{ updatedAt: null }, { updatedAt: { $exists: false } }] },
-          { createdAt: rangeFilter },
-        ],
-      },
-    ];
+    where.createdAt = rangeFilter;
   }
 
   private normalizeReportDateToYmd(
@@ -2639,19 +2575,7 @@ export class DeliveryService implements OnModuleInit {
     delivery: DeliveryEntity,
     queryParams: ListDeliveriesQueryDTO,
   ): boolean {
-    const selectedStatuses = queryParams.status
-      ? queryParams.status.split(',')
-      : [];
-
-    const shouldUseFinishedAt =
-      selectedStatuses.length > 0 &&
-      selectedStatuses.every((status) => status === StatusDelivery.FINISHED);
-
-    const dateValue = shouldUseFinishedAt
-      ? delivery.finishedAt || delivery.updatedAt || delivery.createdAt
-      : delivery.createdAt;
-
-    const deliveryDate = this.normalizeReportDateToYmd(dateValue);
+    const deliveryDate = this.normalizeReportDateToYmd(delivery.createdAt);
 
     if (!deliveryDate) return false;
 

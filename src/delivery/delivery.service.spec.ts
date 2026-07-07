@@ -373,7 +373,7 @@ describe('DeliveryService', () => {
     );
   });
 
-  it('não aplica filtro de data diretamente no where do MongoDB', () => {
+  it('aplica filtro de relatório sempre por createdAt no where do MongoDB', () => {
     const where = (service as any).buildDeliveriesWhere(
       { type: 'superadmin' },
       {
@@ -385,37 +385,35 @@ describe('DeliveryService', () => {
 
     expect(where.$or).toBeUndefined();
     expect(where.finishedAt).toBeUndefined();
-    expect(where.createdAt).toBeUndefined();
+    expect(where.updatedAt).toBeUndefined();
+    expect(where.createdAt).toEqual({
+      $gte: new Date('2026-06-23T00:00:00.000Z'),
+      $lte: new Date('2026-06-23T23:59:59.999Z'),
+    });
     expect(where.status).toEqual({ $in: [StatusDelivery.FINISHED] });
   });
 
-  it('filtra entregas finalizadas em memória pelo dia de finishedAt', () => {
-    const queryParams = {
+  it('filtra entregas finalizadas em memória pelo dia de createdAt', () => {
+    const delivery = {
       status: StatusDelivery.FINISHED,
-      createdIn: '2026-06-23',
-      createdUntil: '2026-06-23',
+      createdAt: new Date('2026-06-22T23:50:00.000Z'),
+      finishedAt: new Date('2026-06-23T00:10:00.000Z'),
     };
 
     expect(
-      (service as any).isDeliveryInsideReportDateFilter(
-        {
-          status: StatusDelivery.FINISHED,
-          createdAt: new Date('2026-06-22T23:30:00.000Z'),
-          finishedAt: new Date('2026-06-23T00:39:00.000Z'),
-        },
-        queryParams,
-      ),
+      (service as any).isDeliveryInsideReportDateFilter(delivery, {
+        status: StatusDelivery.FINISHED,
+        createdIn: '2026-06-22',
+        createdUntil: '2026-06-22',
+      }),
     ).toBe(true);
 
     expect(
-      (service as any).isDeliveryInsideReportDateFilter(
-        {
-          status: StatusDelivery.FINISHED,
-          createdAt: new Date('2026-06-23T10:00:00.000Z'),
-          finishedAt: new Date('2026-06-24T00:39:00.000Z'),
-        },
-        queryParams,
-      ),
+      (service as any).isDeliveryInsideReportDateFilter(delivery, {
+        status: StatusDelivery.FINISHED,
+        createdIn: '2026-06-23',
+        createdUntil: '2026-06-23',
+      }),
     ).toBe(false);
   });
 
