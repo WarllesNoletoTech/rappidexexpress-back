@@ -77,12 +77,42 @@ describe('DeliveryService', () => {
         {
           provide: IfoodOrdersService,
           useValue: {
-            assignDriver: jest.fn(),
-            notifyGoingToOrigin: jest.fn(),
-            notifyArrivedAtOrigin: jest.fn(),
-            dispatchLogisticsOrder: jest.fn(),
+            assignDriver: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
+            notifyGoingToOrigin: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
+            notifyArrivedAtOrigin: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
+            dispatchLogisticsOrder: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
             dispatchOrder: jest.fn(),
-            notifyArrivedAtDestination: jest.fn(),
+            notifyArrivedAtDestination: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
             verifyDeliveryCode: jest.fn().mockResolvedValue({ success: true }),
             requestCancellation: jest.fn(),
             getOrderDetails: jest
@@ -153,6 +183,59 @@ describe('DeliveryService', () => {
     );
   });
 
+  it('não chama goingToOrigin quando assignDriver falha', async () => {
+    ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+      ifoodOrderId: 'ifood-fail',
+      merchantId: 'merchant-fail',
+    });
+    ifoodOrdersService.assignDriver.mockRejectedValueOnce(
+      Object.assign(new Error('422 workerPhone invalid'), {
+        response: { status: 422, data: { code: 'INVALID_PHONE' } },
+      }),
+    );
+
+    const result = await (service as any).syncIfoodIfNeeded(
+      {
+        id: 'delivery-fail',
+        status: StatusDelivery.PENDING,
+        ifoodAssignDriverSynced: false,
+        ifoodGoingToOriginSynced: false,
+      },
+      { motoboy: { id: 'm1', name: 'João', phone: '11999999999' } },
+      { status: StatusDelivery.ONCOURSE },
+    );
+
+    expect(result).toEqual({});
+    expect(ifoodOrdersService.assignDriver).toHaveBeenCalled();
+    expect(ifoodOrdersService.notifyGoingToOrigin).not.toHaveBeenCalled();
+  });
+
+  it('não marca flags quando o iFood não retorna accepted', async () => {
+    ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+      ifoodOrderId: 'ifood-not-accepted',
+      merchantId: 'merchant-not-accepted',
+    });
+    ifoodOrdersService.assignDriver.mockResolvedValueOnce({
+      accepted: false,
+      success: true,
+      httpStatus: 200,
+    });
+
+    const result = await (service as any).syncIfoodIfNeeded(
+      {
+        id: 'delivery-not-accepted',
+        status: StatusDelivery.PENDING,
+        ifoodAssignDriverSynced: false,
+        ifoodGoingToOriginSynced: false,
+      },
+      { motoboy: { id: 'm1', name: 'João', phone: '11999999999' } },
+      { status: StatusDelivery.ONCOURSE },
+    );
+
+    expect(result).toEqual({});
+    expect(ifoodOrdersService.notifyGoingToOrigin).not.toHaveBeenCalled();
+  });
+
   it('não deve sincronizar ACAMINHO sem motoboy em pedido iFood', async () => {
     ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
       ifoodOrderId: 'ifood-10',
@@ -175,7 +258,7 @@ describe('DeliveryService', () => {
     expect(ifoodOrdersService.notifyGoingToOrigin).not.toHaveBeenCalled();
   });
 
-  it('deve executar apenas dispatch no status COLLECTED sem chamar arrivedAtOrigin', async () => {
+  it('deve garantir arrivedAtOrigin antes de dispatch no status COLLECTED', async () => {
     ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
       ifoodOrderId: 'ifood-2',
       merchantId: 'merchant-2',
@@ -185,6 +268,8 @@ describe('DeliveryService', () => {
       {
         id: 'delivery-2',
         status: StatusDelivery.ONCOURSE,
+        ifoodAssignDriverSynced: true,
+        ifoodGoingToOriginSynced: true,
         ifoodArrivedAtOriginSynced: false,
         ifoodDispatchSynced: false,
       },
@@ -192,7 +277,10 @@ describe('DeliveryService', () => {
       { status: StatusDelivery.COLLECTED },
     );
 
-    expect(ifoodOrdersService.notifyArrivedAtOrigin).not.toHaveBeenCalled();
+    expect(ifoodOrdersService.notifyArrivedAtOrigin).toHaveBeenCalledWith(
+      'ifood-2',
+      'merchant-2',
+    );
     expect(ifoodOrdersService.dispatchLogisticsOrder).toHaveBeenCalledWith(
       'ifood-2',
       'merchant-2',
@@ -210,6 +298,8 @@ describe('DeliveryService', () => {
       {
         id: 'delivery-8',
         status: StatusDelivery.ONCOURSE,
+        ifoodAssignDriverSynced: true,
+        ifoodGoingToOriginSynced: true,
         ifoodArrivedAtOriginSynced: false,
       },
       {},

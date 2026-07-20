@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   InternalServerErrorException,
   Injectable,
   Logger,
@@ -15,6 +16,33 @@ import {
 } from '../shared/constants/enums.constants';
 import { IfoodAuthService } from './ifood-auth.service';
 import { IfoodHttpService } from './ifood-http.service';
+
+export class IfoodLogisticsException extends HttpException {
+  readonly axiosResponse: any;
+  readonly ifoodSyncContext: Record<string, any>;
+
+  constructor(
+    message: string,
+    status: number,
+    context: Record<string, any>,
+    originalError?: any,
+  ) {
+    super({ message, ...context }, status || 500);
+    this.axiosResponse = originalError?.response;
+    this.stack = originalError?.stack || this.stack;
+    this.ifoodSyncContext = context;
+  }
+}
+
+type IfoodLogisticsResult = {
+  success: true;
+  accepted: boolean;
+  httpStatus: number;
+  orderId: string;
+  merchantId?: string | null;
+  action: string;
+  responseBody?: any;
+};
 
 @Injectable()
 export class IfoodOrdersService {
@@ -110,38 +138,73 @@ export class IfoodOrdersService {
     });
 
     try {
-      await this.ifoodHttpService.request('logistics_assign_driver', {
-        method: 'POST',
-        url: `https://merchant-api.ifood.com.br/logistics/v1.0/orders/${orderId}/assignDriver`,
-        data: {
-          workerName: motoboy?.name || 'Motoboy Rappidex',
-          workerPhone: this.normalizePhone(motoboy?.phone || ''),
-          workerVehicleType: 'MOTORCYCLE',
+      const workerPhone = this.normalizePhone(motoboy?.phone || '');
+      if (!this.isValidBrazilianPhone(workerPhone)) {
+        this.logger.error(
+          'ifood_status_sync telefone inválido para assignDriver',
+          {
+            orderId,
+            merchantId,
+            motoboyId: motoboy?.id,
+            rawPhoneLength: String(motoboy?.phone || '').length,
+            normalizedPhone: this.maskPhone(workerPhone),
+            action: 'assignDriver',
+          },
+        );
+        throw new BadRequestException(
+          'Telefone do motoboy inválido para assignDriver do iFood.',
+        );
+      }
+
+      const url = `https://merchant-api.ifood.com.br/logistics/v1.0/orders/${orderId}/assignDriver`;
+      const response = await this.ifoodHttpService.request(
+        'logistics_assign_driver',
+        {
+          method: 'POST',
+          url,
+          validateStatus: (status) => status === 202,
+          data: {
+            workerName: motoboy?.name || 'Motoboy Rappidex',
+            workerPhone,
+            workerVehicleType: 'MOTORCYCLE',
+          },
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
         },
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      );
 
       this.logger.log(
         `Entregador vinculado ao pedido no iFood. OrderId: ${orderId}`,
       );
 
-      return { success: true, orderId };
+      return this.buildAcceptedResult(
+        'assignDriver',
+        response,
+        orderId,
+        merchantId,
+      );
     } catch (error: any) {
       const status = error?.response?.status;
       const data = error?.response?.data;
 
-      this.logger.error('Erro ao vincular entregador no iFood', {
+      const context = this.buildErrorContext({
+        action: 'assignDriver',
+        endpoint: 'assignDriver',
+        orderId,
+        merchantId,
         status,
         data,
-        orderId,
+        error,
         motoboyId: motoboy?.id,
       });
-
-      throw new InternalServerErrorException(
+      this.logger.error('ifood_status_sync falha assignDriver', context);
+      throw new IfoodLogisticsException(
         'Não foi possível vincular o entregador ao pedido no iFood.',
+        status || error?.status || 500,
+        context,
+        error,
       );
     }
   }
@@ -833,39 +896,113 @@ export class IfoodOrdersService {
     });
 
     try {
-      await this.ifoodHttpService.request(`logistics_${endpoint}`, {
-        method: 'POST',
-        url: `https://merchant-api.ifood.com.br/logistics/v1.0/orders/${orderId}/${endpoint}`,
-        data: {},
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+      const url = `https://merchant-api.ifood.com.br/logistics/v1.0/orders/${orderId}/${endpoint}`;
+      const response = await this.ifoodHttpService.request(
+        `logistics_${endpoint}`,
+        {
+          method: 'POST',
+          url,
+          validateStatus: (status) => status === 202,
+          data: {},
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
         },
-      });
+      );
 
       this.logger.log(
         `${actionLabel} enviada ao iFood com sucesso. OrderId: ${orderId}`,
       );
 
-      return { success: true, orderId };
+      return this.buildAcceptedResult(endpoint, response, orderId, merchantId);
     } catch (error: any) {
       const status = error?.response?.status;
       const data = error?.response?.data;
 
-      this.logger.error(`Erro ao enviar ${actionLabel} ao iFood`, {
+      const context = this.buildErrorContext({
+        action: endpoint,
+        endpoint,
+        orderId,
+        merchantId,
         status,
         data,
-        orderId,
+        error,
       });
-
-      throw new InternalServerErrorException(
+      this.logger.error(`ifood_status_sync falha ${endpoint}`, context);
+      throw new IfoodLogisticsException(
         `Não foi possível enviar ${actionLabel} ao iFood.`,
+        status || error?.status || 500,
+        context,
+        error,
       );
     }
   }
 
+  private buildAcceptedResult(
+    action: string,
+    response: any,
+    orderId: string,
+    merchantId?: string | null,
+  ): IfoodLogisticsResult {
+    return {
+      success: true,
+      accepted: response?.status === 202,
+      httpStatus: response?.status,
+      orderId,
+      merchantId,
+      action,
+      responseBody: response?.data ?? null,
+    };
+  }
+
+  private buildErrorContext(params: Record<string, any>) {
+    const {
+      action,
+      endpoint,
+      orderId,
+      merchantId,
+      status,
+      data,
+      error,
+      ...extra
+    } = params;
+    return {
+      action,
+      endpoint,
+      orderId,
+      merchantId,
+      deliveryId: extra.deliveryId,
+      httpStatus: status || error?.status || null,
+      responseBody: data ?? null,
+      responseData: data ?? null,
+      ifoodCode: data?.code || data?.error?.code || null,
+      ifoodMessage:
+        data?.message ||
+        data?.description ||
+        data?.error?.message ||
+        error?.message ||
+        null,
+      url: error?.config?.url || (endpoint ? `logistics/${endpoint}` : null),
+      method: error?.config?.method || 'POST',
+      attempt: error?.config?.['x-ifood-attempt'] || 1,
+      ...extra,
+    };
+  }
+
   private normalizePhone(phone: string): string {
-    return String(phone || '').replace(/\D/g, '');
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+    return digits;
+  }
+
+  private isValidBrazilianPhone(phone: string): boolean {
+    return /^55\d{10,11}$/.test(phone);
+  }
+
+  private maskPhone(phone: string): string {
+    if (!phone) return '';
+    return `${phone.slice(0, 4)}***${phone.slice(-2)}`;
   }
 
   private resolvePaymentType(order: any): PaymentType {
