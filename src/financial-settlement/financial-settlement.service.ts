@@ -136,9 +136,6 @@ export class FinancialSettlementService {
     }
 
     const whatsapp = this.normalizeWhatsapp(establishment.managerWhatsapp);
-    const includeMonthlyFee = this.shouldIncludeMonthlyFee(
-      query.includeMonthlyFee,
-    );
 
     const deliveries = await this.deliveryRepository.find({
       where: {
@@ -153,9 +150,9 @@ export class FinancialSettlementService {
       order: { createdAt: 'ASC' },
     });
 
-    if (!deliveries.length && !includeMonthlyFee) {
+    if (!deliveries.length) {
       throw new BadRequestException(
-        'Não existem entregas nesse período para gerar o relatório.',
+        'Nenhuma entrega encontrada para este período.',
       );
     }
 
@@ -167,7 +164,7 @@ export class FinancialSettlementService {
     }
 
     const deliveryFeeValue = this.getDeliveryFeeValue(city);
-    if (deliveries.length && !deliveryFeeValue) {
+    if (!deliveryFeeValue) {
       throw new BadRequestException(
         'Valor da entrega não configurado para esta cidade.',
       );
@@ -180,6 +177,9 @@ export class FinancialSettlementService {
       );
     }
 
+    const includeMonthlyFee = this.shouldIncludeMonthlyFee(
+      query.includeMonthlyFee,
+    );
     const monthlyFeeValue = includeMonthlyFee
       ? this.getMonthlyFeeValue(city)
       : 0;
@@ -225,10 +225,10 @@ export class FinancialSettlementService {
   }
 
   private async resolveCity(
-    delivery: DeliveryEntity | undefined,
+    delivery: DeliveryEntity,
     establishment: UserEntity,
   ) {
-    const deliveryCityId = String((delivery as any)?.cityId ?? '').trim();
+    const deliveryCityId = String((delivery as any).cityId ?? '').trim();
     if (deliveryCityId) {
       const byDelivery = await this.findCityById(deliveryCityId);
       if (byDelivery) return byDelivery;
@@ -239,7 +239,7 @@ export class FinancialSettlementService {
       if (byEstablishment) return byEstablishment;
     }
 
-    if (delivery?.addressCity) {
+    if (delivery.addressCity) {
       const where: Record<string, any> = {
         name: new RegExp(`^${this.escapeRegExp(delivery.addressCity)}$`, 'i'),
       };
