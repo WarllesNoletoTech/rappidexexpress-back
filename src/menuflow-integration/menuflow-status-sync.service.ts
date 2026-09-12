@@ -8,6 +8,19 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MongoRepository } from 'typeorm';
 import { DeliveryEntity } from '../database/entities';
+import { StatusDelivery } from '../shared/constants/enums.constants';
+
+const MENU_FLOW_STATUS_LABELS: Record<StatusDelivery, string> = {
+  [StatusDelivery.AWAITING_RELEASE]: 'Aguardando liberação',
+  [StatusDelivery.PENDING]: 'Aguardando motoboy',
+  [StatusDelivery.ONCOURSE]: 'Motoboy indo até o estabelecimento',
+  [StatusDelivery.ARRIVED_AT_STORE]: 'Motoboy chegou ao estabelecimento',
+  [StatusDelivery.COLLECTED]: 'Motoboy a caminho do cliente',
+  [StatusDelivery.ARRIVED_AT_DESTINATION]: 'Motoboy chegou ao destino',
+  [StatusDelivery.AWAITING_CODE]: 'Aguardando código de entrega',
+  [StatusDelivery.FINISHED]: 'Entrega concluída',
+  [StatusDelivery.CANCELED]: 'Entrega cancelada',
+};
 
 @Injectable()
 export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy {
@@ -66,6 +79,8 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
 
     const updatedAt = delivery.updatedAt || new Date();
     const eventId = `${delivery.id}:${delivery.status}:${new Date(updatedAt).getTime()}`;
+    const statusLabel =
+      MENU_FLOW_STATUS_LABELS[delivery.status] || String(delivery.status);
 
     try {
       await this.request('/integrations/rappidex/status', {
@@ -74,6 +89,7 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
           orderId: delivery.menuFlowOrderId,
           deliveryId: delivery.id,
           status: delivery.status,
+          statusLabel,
           eventId,
           updatedAt: new Date(updatedAt).toISOString(),
           motoboyName: delivery.motoboy?.name || undefined,
@@ -94,7 +110,7 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
       );
 
       this.logger.log(
-        `Rappidex -> Menu Flow deliveryId=${delivery.id} orderId=${delivery.menuFlowOrderId} status=${delivery.status}`,
+        `Rappidex -> Menu Flow deliveryId=${delivery.id} orderId=${delivery.menuFlowOrderId} status=${delivery.status} label="${statusLabel}"`,
       );
     } catch (error) {
       await this.deliveries.updateOne(
