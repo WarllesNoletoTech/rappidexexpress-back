@@ -23,7 +23,9 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "diagnose:mongo": "node scripts/diagnose-mongo-legacy.js"
+    "diagnose:mongo": "node scripts/diagnose-mongo-legacy.js",
+    "check:menuflow-integration": "node scripts/migrate-menuflow-integration.js",
+    "migrate:menuflow-integration": "node scripts/migrate-menuflow-integration.js --apply"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

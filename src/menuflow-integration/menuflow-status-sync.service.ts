@@ -1,0 +1,173 @@
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { MongoRepository } from 'typeorm';
+import { DeliveryEntity } from '../database/entities';
+
+@Injectable()
+export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(MenuFlowStatusSyncService.name);
+  private retryTimer?: NodeJS.Timeout;
+
+  constructor(
+    @InjectRepository(DeliveryEntity)
+    private readonly deliveries: MongoRepository<DeliveryEntity>,
+    private readonly config: ConfigService,
+  ) {}
+
+  onModuleInit() {
+    this.retryTimer = setInterval(() => void this.retryPending(), 60_000);
+    this.retryTimer.unref?.();
+    setTimeout(() => void this.retryPending(), 7_500).unref?.();
+  }
+
+  onModuleDestroy() {
+    if (this.retryTimer) clearInterval(this.retryTimer);
+  }
+
+  queueDelivery(deliveryId: string) {
+    void this.markPendingAndSync(deliveryId).catch((error) => {
+      this.logger.warn(
+        `Rappidex -> Menu Flow falhou deliveryId=${deliveryId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+
+  private async markPendingAndSync(deliveryId: string) {
+    await this.deliveries.updateOne(
+      { id: deliveryId } as any,
+      {
+        $set: {
+          menuFlowSyncPending: true,
+          menuFlowSyncError: '',
+        },
+      } as any,
+    );
+    await this.syncDelivery(deliveryId);
+  }
+
+  private async syncDelivery(deliveryId: string) {
+    const delivery = await this.deliveries.findOne({
+      where: { id: deliveryId } as any,
+      relations: { motoboy: true, establishment: true },
+    });
+    if (
+      !delivery ||
+      delivery.source !== 'MENU_FLOW' ||
+      !delivery.menuFlowOrderId
+    ) {
+      return;
+    }
+
+    const updatedAt = delivery.updatedAt || new Date();
+    const eventId = `${delivery.id}:${delivery.status}:${new Date(updatedAt).getTime()}`;
+
+    try {
+      await this.request('/integrations/rappidex/status', {
+        method: 'POST',
+        body: JSON.stringify({
+          orderId: delivery.menuFlowOrderId,
+          deliveryId: delivery.id,
+          status: delivery.status,
+          eventId,
+          updatedAt: new Date(updatedAt).toISOString(),
+          motoboyName: delivery.motoboy?.name || undefined,
+          motoboyPhone: delivery.motoboy?.phone || undefined,
+        }),
+      });
+
+      await this.deliveries.updateOne(
+        { id: delivery.id } as any,
+        {
+          $set: {
+            menuFlowSyncPending: false,
+            menuFlowLastSyncAt: new Date(),
+            menuFlowLastSyncedStatus: delivery.status,
+            menuFlowSyncError: '',
+          },
+        } as any,
+      );
+
+      this.logger.log(
+        `Rappidex -> Menu Flow deliveryId=${delivery.id} orderId=${delivery.menuFlowOrderId} status=${delivery.status}`,
+      );
+    } catch (error) {
+      await this.deliveries.updateOne(
+        { id: delivery.id } as any,
+        {
+          $set: {
+            menuFlowSyncPending: true,
+            menuFlowSyncError: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+          },
+        } as any,
+      );
+      throw error;
+    }
+  }
+
+  private async retryPending() {
+    try {
+      const pending = await this.deliveries.find({
+        where: {
+          source: 'MENU_FLOW',
+          menuFlowSyncPending: true,
+        } as any,
+        take: 25,
+      });
+      await Promise.allSettled(
+        pending.map((delivery) => this.syncDelivery(delivery.id)),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Fila de status Menu Flow: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private async request(path: string, init: RequestInit) {
+    const base = String(this.config.get<string>('MENUFLOW_API_URL') || '')
+      .trim()
+      .replace(/\/+$/, '');
+    const secret = String(
+      this.config.get<string>('MENUFLOW_INTEGRATION_SECRET') || '',
+    ).trim();
+    if (!base || !secret) {
+      throw new Error(
+        'MENUFLOW_API_URL e MENUFLOW_INTEGRATION_SECRET precisam estar configurados no backend da Rappidex.',
+      );
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(`${base}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          'content-type': 'application/json',
+          Authorization: `Bearer ${secret}`,
+          ...(init.headers || {}),
+        },
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        let detail: any = text;
+        try {
+          detail = text ? JSON.parse(text) : null;
+        } catch {
+          // mantém o corpo textual
+        }
+        throw new Error(
+          `Menu Flow respondeu ${response.status}: ${detail?.message || detail?.error || text || 'erro sem corpo'}`,
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}

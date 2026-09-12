@@ -115,6 +115,15 @@ export class UserEntity {
   @Column({ default: 0 })
   ifoodOrdersAvailable: number;
 
+  // Independent Menu Flow integration. These fields are intentionally separate
+  // from all iFood credentials and merchant identifiers.
+  @Column({ default: false })
+  menuFlowEnabled: boolean;
+
+  @Column({ nullable: true })
+  @Index({ unique: true, sparse: true })
+  menuFlowCompanyId?: string;
+
   @Column()
   createdAt: Date;
 

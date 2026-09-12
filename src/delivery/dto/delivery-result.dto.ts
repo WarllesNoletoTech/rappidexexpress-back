@@ -152,6 +152,57 @@ export class DeliveryResult {
   @Expose()
   ifoodMerchantLocation?: string;
 
+  @Expose()
+  source?: string;
+
+  @Expose()
+  menuFlowOrderId?: string;
+
+  @Expose()
+  menuFlowOrderNumber?: string;
+
+  @Expose()
+  menuFlowCompanyId?: string;
+
+  @Expose()
+  menuFlowRestaurantName?: string;
+
+  @Expose()
+  menuFlowSubtotalCents?: number;
+
+  @Expose()
+  menuFlowDeliveryFeeCents?: number;
+
+  @Expose()
+  menuFlowServiceFeeCents?: number;
+
+  @Expose()
+  menuFlowDiscountCents?: number;
+
+  @Expose()
+  menuFlowTotalCents?: number;
+
+  @Expose()
+  menuFlowPaymentMethod?: string;
+
+  @Expose()
+  menuFlowNeedsChange?: boolean;
+
+  @Expose()
+  menuFlowChangeForCents?: number;
+
+  @Expose()
+  menuFlowExpectedChangeCents?: number;
+
+  @Expose()
+  menuFlowItems?: Array<{
+    productName: string;
+    quantity: number;
+    unitPriceCents: number;
+    observation?: string;
+    addons?: Array<{ name: string; groupName?: string; priceCents: number }>;
+  }>;
+
   private static getIfoodMerchantCardData(delivery: DeliveryEntity) {
     const establishment = delivery.establishment;
     const merchantId = String((delivery as any).ifoodMerchantId || '').trim();

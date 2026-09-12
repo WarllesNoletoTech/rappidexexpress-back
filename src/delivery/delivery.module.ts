@@ -10,6 +10,7 @@ import {
 } from '../database/entities';
 import { OrdersGateway } from '../gateway/orders.gateway';
 import { IfoodModule } from '../ifood/ifood.module';
+import { MenuFlowIntegrationModule } from '../menuflow-integration/menuflow-integration.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { IfoodModule } from '../ifood/ifood.module';
       CityEntity,
     ]),
     forwardRef(() => IfoodModule),
+    forwardRef(() => MenuFlowIntegrationModule),
   ],
   controllers: [DeliveryController],
   providers: [DeliveryService, OrdersGateway],

@@ -289,6 +289,41 @@ export class UserService {
     }
   }
 
+  async updateMenuFlowIntegration(
+    userId: string,
+    data: { menuFlowEnabled: boolean; menuFlowCompanyId?: string },
+  ): Promise<UserResult> {
+    const userToUpdate = await this.findUserOrFail(userId);
+    const menuFlowEnabled = Boolean(data.menuFlowEnabled);
+    const menuFlowCompanyId = String(data.menuFlowCompanyId || '').trim();
+
+    if (menuFlowEnabled && !menuFlowCompanyId) {
+      throw new BadRequestException(
+        'Informe o ID da empresa Menu Flow para ativar a integração.',
+      );
+    }
+
+    if (menuFlowCompanyId) {
+      const alreadyLinked = await this.userRepository.findOne({
+        where: { menuFlowCompanyId } as any,
+      });
+      if (alreadyLinked && alreadyLinked.id !== userToUpdate.id) {
+        throw new BadRequestException(
+          'Este ID de empresa Menu Flow já está vinculado a outra empresa.',
+        );
+      }
+    }
+
+    const changedUser = await this.userRepository.save({
+      ...userToUpdate,
+      menuFlowEnabled,
+      menuFlowCompanyId: menuFlowCompanyId || undefined,
+      updatedAt: addHours(new Date(), -3),
+    });
+
+    return UserResult.fromEntity(changedUser);
+  }
+
   private normalizePhone(phone?: string) {
     const digits = String(phone ?? '').replace(/\D/g, '');
 

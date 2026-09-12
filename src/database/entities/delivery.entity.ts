@@ -11,6 +11,10 @@ import { UserEntity } from './user.entity';
   unique: true,
   sparse: true,
 })
+@Index(['menuFlowOrderId'], {
+  unique: true,
+  sparse: true,
+})
 export class DeliveryEntity {
   @ObjectIdColumn()
   internalId: ObjectId;
@@ -142,6 +146,73 @@ export class DeliveryEntity {
   releasedAt?: Date;
   @Column({ nullable: true })
   releasedBy?: string;
+
+  // Menu Flow integration metadata. Kept completely separate from iFood.
+  @Column({ nullable: true })
+  source?: string;
+
+  @Column({ nullable: true })
+  menuFlowOrderId?: string;
+
+  @Column({ nullable: true })
+  menuFlowOrderNumber?: string;
+
+  @Column({ nullable: true })
+  menuFlowCompanyId?: string;
+
+  @Column({ nullable: true })
+  menuFlowRestaurantName?: string;
+
+  @Column({ nullable: true })
+  menuFlowSubtotalCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowDeliveryFeeCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowServiceFeeCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowDiscountCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowTotalCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowPaymentMethod?: string;
+
+  @Column({ nullable: true })
+  menuFlowNeedsChange?: boolean;
+
+  @Column({ nullable: true })
+  menuFlowChangeForCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowExpectedChangeCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowItems?: Array<{
+    productName: string;
+    quantity: number;
+    unitPriceCents: number;
+    observation?: string;
+    addons?: Array<{ name: string; groupName?: string; priceCents: number }>;
+  }>;
+
+  @Column({ nullable: true })
+  menuFlowImportedAt?: Date;
+
+  @Column({ default: false })
+  menuFlowSyncPending?: boolean;
+
+  @Column({ nullable: true })
+  menuFlowLastSyncAt?: Date;
+
+  @Column({ nullable: true })
+  menuFlowLastSyncedStatus?: string;
+
+  @Column({ nullable: true })
+  menuFlowSyncError?: string;
 
   @Column({ nullable: true })
   arrivedAtDestinationAt?: Date;

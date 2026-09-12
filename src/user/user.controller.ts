@@ -30,6 +30,7 @@ import {
   UserParamsDto,
   UserResult,
 } from './dto';
+import { UpdateMenuFlowIntegrationDto } from './dto/menu-flow-integration.dto';
 
 @Controller('user')
 export class UserController {
@@ -105,6 +106,22 @@ export class UserController {
       );
     }
     return await this.userService.updateUser(data, param.user, user);
+  }
+
+  @Put(':user/menu-flow-integration')
+  @UseGuards(JwtAuthGuard)
+  async updateMenuFlowIntegration(
+    @Param() param: UserParamsDto,
+    @User() user: UserRequest,
+    @Body() data: UpdateMenuFlowIntegrationDto,
+  ) {
+    if (!onlyForAdmin(user.type)) {
+      throw new UnauthorizedException(
+        'Você não tem permissão para esse recurso.',
+      );
+    }
+
+    return this.userService.updateMenuFlowIntegration(param.user, data);
   }
 
   @Get('/myself')
