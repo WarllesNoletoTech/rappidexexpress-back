@@ -4,6 +4,9 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  HttpCode,
+  HttpStatus,
+  Logger,
   Param,
   Post,
   UnauthorizedException,
@@ -21,6 +24,7 @@ import { IfoodAuthService } from './ifood-auth.service';
 import { IfoodOrderLinkService } from './ifood-order-link.service';
 import { IfoodOrdersService } from './ifood-orders.service';
 import { IfoodPollingService } from './ifood-polling.service';
+import { IfoodAutoPollingService } from './ifood-auto-polling.service';
 import { IfoodImportService } from './ifood-import.service';
 import { IfoodReadinessService } from './ifood-readiness.service';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -29,12 +33,16 @@ import { UserEntity } from '../database/entities';
 
 @Controller('ifood')
 export class IfoodAdminController {
+  private readonly logger = new Logger(IfoodAdminController.name);
+  private readonly companySyncJobs = new Set<string>();
+
   constructor(
     private readonly configService: ConfigService,
     private readonly deliveryService: DeliveryService,
     private readonly ifoodAuthService: IfoodAuthService,
     private readonly ifoodOrdersService: IfoodOrdersService,
     private readonly ifoodPollingService: IfoodPollingService,
+    private readonly ifoodAutoPollingService: IfoodAutoPollingService,
     private readonly ifoodImportService: IfoodImportService,
     private readonly ifoodOrderLinkService: IfoodOrderLinkService,
     private readonly ifoodReadinessService: IfoodReadinessService,
@@ -303,6 +311,7 @@ export class IfoodAdminController {
 
   @Post('sync-company/:companyId')
   @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.ACCEPTED)
   async syncCompanyIfood(
     @Param('companyId') companyId: string,
     @User() user: UserRequest,
@@ -320,20 +329,86 @@ export class IfoodAdminController {
     }
 
     if (!company.useIfoodIntegration || !company.isActive) {
-      throw new BadRequestException('A integração iFood não está ativa para esta loja.');
+      throw new BadRequestException(
+        'A integração iFood não está ativa para esta loja.',
+      );
     }
 
-    const merchantId = String(company.ifoodMerchantId || '').trim();
-    if (!merchantId) {
-      throw new BadRequestException('ifoodMerchantId não configurado para esta loja.');
+    const merchantIds = Array.from(
+      new Set(
+        [
+          String(company.ifoodMerchantId || '').trim(),
+          ...(Array.isArray((company as any).ifoodMerchants)
+            ? (company as any).ifoodMerchants
+                .filter((merchant: any) => merchant?.enabled !== false)
+                .map((merchant: any) =>
+                  String(merchant?.merchantId || '').trim(),
+                )
+            : []),
+        ].filter(Boolean),
+      ),
+    );
+
+    if (merchantIds.length === 0) {
+      throw new BadRequestException(
+        'Nenhum Merchant ID do iFood está configurado para esta loja.',
+      );
     }
 
-    await this.ifoodImportService.retryPendingImportsForCompany(companyId);
+    const alreadyRunning = this.companySyncJobs.has(companyId);
+
+    if (!alreadyRunning) {
+      this.companySyncJobs.add(companyId);
+
+      // O Heroku encerra requests HTTP que ultrapassam ~30s (H12).
+      // A sincronização pode consultar/reprocessar centenas de eventos, então
+      // ela deve continuar fora do ciclo da resposta HTTP. O endpoint retorna
+      // 202 imediatamente e o trabalho segue no mesmo dyno.
+      setImmediate(() => {
+        void this.runCompanySyncInBackground(companyId, merchantIds);
+      });
+    }
 
     return {
+      accepted: true,
+      alreadyRunning,
       companyId,
-      merchantId,
-      message: 'Sincronização iFood iniciada para esta loja',
+      merchantIds,
+      message: alreadyRunning
+        ? 'Já existe uma sincronização iFood em andamento para esta loja.'
+        : 'Sincronização iFood aceita e iniciada em segundo plano.',
     };
+  }
+
+  private async runCompanySyncInBackground(
+    companyId: string,
+    merchantIds: string[],
+  ) {
+    const startedAt = Date.now();
+
+    this.logger.log(
+      `iFood sync-company background iniciado companyId=${companyId} merchants=${merchantIds.length}`,
+    );
+
+    try {
+      // Força uma reconciliação imediata com o iFood para recuperar eventos
+      // que possam ter ficado pendentes durante uma indisponibilidade. A
+      // rotina possui trava interna para não concorrer com o polling periódico.
+      await this.ifoodAutoPollingService.triggerPollingCycle();
+
+      // Depois do polling, reavalia especificamente os eventos da empresa.
+      await this.ifoodImportService.retryPendingImportsForCompany(companyId);
+
+      this.logger.log(
+        `iFood sync-company background concluído companyId=${companyId} durationMs=${Date.now() - startedAt}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `iFood sync-company background falhou companyId=${companyId} merchants=${merchantIds.join(',')} durationMs=${Date.now() - startedAt} erro=${error?.message || error}`,
+        error?.stack,
+      );
+    } finally {
+      this.companySyncJobs.delete(companyId);
+    }
   }
 }
