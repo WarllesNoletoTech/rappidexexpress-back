@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS "user_entity" (
   "ifoodOrdersReleased" numeric NOT NULL DEFAULT 0,
   "ifoodOrdersUsed" numeric NOT NULL DEFAULT 0,
   "ifoodOrdersAvailable" numeric NOT NULL DEFAULT 0,
+  "menuFlowEnabled" boolean NOT NULL DEFAULT false,
+  "menuFlowCompanyId" varchar,
   "createdAt" timestamptz NOT NULL DEFAULT now(),
   "createdBy" varchar,
   "updatedAt" timestamptz NOT NULL DEFAULT now()
@@ -100,6 +102,26 @@ CREATE TABLE IF NOT EXISTS "delivery_entity" (
   "ifoodConfirmedAt" timestamptz,
   "releasedAt" timestamptz,
   "releasedBy" varchar,
+  "source" varchar,
+  "menuFlowOrderId" varchar,
+  "menuFlowOrderNumber" varchar,
+  "menuFlowCompanyId" varchar,
+  "menuFlowRestaurantName" varchar,
+  "menuFlowSubtotalCents" bigint,
+  "menuFlowDeliveryFeeCents" bigint,
+  "menuFlowServiceFeeCents" bigint,
+  "menuFlowDiscountCents" bigint,
+  "menuFlowTotalCents" bigint,
+  "menuFlowPaymentMethod" varchar,
+  "menuFlowNeedsChange" boolean,
+  "menuFlowChangeForCents" bigint,
+  "menuFlowExpectedChangeCents" bigint,
+  "menuFlowItems" jsonb,
+  "menuFlowImportedAt" timestamptz,
+  "menuFlowSyncPending" boolean NOT NULL DEFAULT false,
+  "menuFlowLastSyncAt" timestamptz,
+  "menuFlowLastSyncedStatus" varchar,
+  "menuFlowSyncError" text,
   "arrivedAtDestinationAt" timestamptz,
   "finishedAt" timestamptz,
   "ifoodAssignDriverSynced" boolean NOT NULL DEFAULT false,
@@ -184,11 +206,39 @@ CREATE TABLE IF NOT EXISTS "financial_settlement_history_entity" (
   "errorMessage" text
 );
 
+ALTER TABLE "user_entity"
+  ADD COLUMN IF NOT EXISTS "menuFlowEnabled" boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "menuFlowCompanyId" varchar;
+
+ALTER TABLE "delivery_entity"
+  ADD COLUMN IF NOT EXISTS "source" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowOrderId" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowOrderNumber" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowCompanyId" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowRestaurantName" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowSubtotalCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowDeliveryFeeCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowServiceFeeCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowDiscountCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowTotalCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowPaymentMethod" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowNeedsChange" boolean,
+  ADD COLUMN IF NOT EXISTS "menuFlowChangeForCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowExpectedChangeCents" bigint,
+  ADD COLUMN IF NOT EXISTS "menuFlowItems" jsonb,
+  ADD COLUMN IF NOT EXISTS "menuFlowImportedAt" timestamptz,
+  ADD COLUMN IF NOT EXISTS "menuFlowSyncPending" boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "menuFlowLastSyncAt" timestamptz,
+  ADD COLUMN IF NOT EXISTS "menuFlowLastSyncedStatus" varchar,
+  ADD COLUMN IF NOT EXISTS "menuFlowSyncError" text;
+
+
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_USER_LOGICAL_ID" ON "user_entity" ("id");
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_USER_USERNAME" ON "user_entity" ("user");
 CREATE INDEX IF NOT EXISTS "IDX_USER_CITY_TYPE_ACTIVE" ON "user_entity" ("cityId", "type", "isActive");
 CREATE INDEX IF NOT EXISTS "IDX_USER_IFOOD_ACTIVE" ON "user_entity" ("useIfoodIntegration", "isActive");
 CREATE INDEX IF NOT EXISTS "IDX_USER_IFOOD_MERCHANTS_GIN" ON "user_entity" USING gin ("ifoodMerchants");
+CREATE UNIQUE INDEX IF NOT EXISTS "IDX_USER_MENU_FLOW_COMPANY_ID" ON "user_entity" ("menuFlowCompanyId");
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_DELIVERY_LOGICAL_ID" ON "delivery_entity" ("id");
 CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_STATUS" ON "delivery_entity" ("status");
@@ -206,6 +256,8 @@ CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_ESTABLISHMENT_FINISHED" ON "deli
 CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_MOTOBOY_STATUS_CREATED" ON "delivery_entity" ("isActive", "motoboyId", "status", "createdAt" DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_DELIVERY_IFOOD_ORDER_MERCHANT_UNIQUE"
   ON "delivery_entity" ("ifoodOrderId", "ifoodMerchantId");
+CREATE UNIQUE INDEX IF NOT EXISTS "IDX_DELIVERY_MENU_FLOW_ORDER_UNIQUE"
+  ON "delivery_entity" ("menuFlowOrderId");
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_LOG_LOGICAL_ID" ON "log_entity" ("id");
 CREATE INDEX IF NOT EXISTS "IDX_LOG_CREATED_AT" ON "log_entity" ("createdAt" DESC);

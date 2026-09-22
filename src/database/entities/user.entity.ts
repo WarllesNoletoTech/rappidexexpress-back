@@ -17,6 +17,7 @@ export type IfoodMerchantConfig = {
 @Index('IDX_USER_LOGICAL_ID', ['id'], { unique: true })
 @Index('IDX_USER_USERNAME', ['user'], { unique: true })
 @Index('IDX_USER_CITY_TYPE_ACTIVE', ['cityId', 'type', 'isActive'])
+@Index('IDX_USER_MENU_FLOW_COMPANY_ID', ['menuFlowCompanyId'], { unique: true })
 export class UserEntity {
   @PrimaryGeneratedColumn('uuid')
   internalId: string;
@@ -112,6 +113,13 @@ export class UserEntity {
 
   @Column({ default: 0, type: 'numeric', transformer: bigintNumberTransformer })
   ifoodOrdersAvailable: number;
+
+  // Integração Menu Flow independente do iFood.
+  @Column({ default: false })
+  menuFlowEnabled: boolean;
+
+  @Column({ nullable: true })
+  menuFlowCompanyId?: string;
 
   @Column({ type: 'timestamptz' })
   createdAt: Date;

@@ -8,6 +8,7 @@ import { UserEntity } from './user.entity';
 @Entity()
 @Index('IDX_DELIVERY_LOGICAL_ID', ['id'], { unique: true })
 @Index('IDX_DELIVERY_IFOOD_ORDER_MERCHANT_UNIQUE', ['ifoodOrderId', 'ifoodMerchantId'], { unique: true })
+@Index('IDX_DELIVERY_MENU_FLOW_ORDER_UNIQUE', ['menuFlowOrderId'], { unique: true })
 @Index('IDX_DELIVERY_STATUS', ['status'])
 @Index('IDX_DELIVERY_ESTABLISHMENT_CITY', ['establishmentCityId'])
 @Index('IDX_DELIVERY_MOTOBOY', ['motoboyId'])
@@ -173,6 +174,73 @@ export class DeliveryEntity {
 
   @Column({ nullable: true })
   releasedBy?: string;
+
+  // Metadados Menu Flow, mantidos separados do iFood.
+  @Column({ nullable: true })
+  source?: string;
+
+  @Column({ nullable: true })
+  menuFlowOrderId?: string;
+
+  @Column({ nullable: true })
+  menuFlowOrderNumber?: string;
+
+  @Column({ nullable: true })
+  menuFlowCompanyId?: string;
+
+  @Column({ nullable: true })
+  menuFlowRestaurantName?: string;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowSubtotalCents?: number;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowDeliveryFeeCents?: number;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowServiceFeeCents?: number;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowDiscountCents?: number;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowTotalCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowPaymentMethod?: string;
+
+  @Column({ nullable: true })
+  menuFlowNeedsChange?: boolean;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowChangeForCents?: number;
+
+  @Column({ nullable: true, type: 'bigint' })
+  menuFlowExpectedChangeCents?: number;
+
+  @Column({ nullable: true, type: 'jsonb' })
+  menuFlowItems?: Array<{
+    productName: string;
+    quantity: number;
+    unitPriceCents: number;
+    observation?: string;
+    addons?: Array<{ name: string; groupName?: string; priceCents: number }>;
+  }>;
+
+  @Column({ nullable: true, type: 'timestamptz' })
+  menuFlowImportedAt?: Date;
+
+  @Column({ default: false })
+  menuFlowSyncPending?: boolean;
+
+  @Column({ nullable: true, type: 'timestamptz' })
+  menuFlowLastSyncAt?: Date;
+
+  @Column({ nullable: true })
+  menuFlowLastSyncedStatus?: string;
+
+  @Column({ nullable: true, type: 'text' })
+  menuFlowSyncError?: string;
 
   @Column({ nullable: true, type: 'timestamptz' })
   arrivedAtDestinationAt?: Date;

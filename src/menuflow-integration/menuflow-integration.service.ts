@@ -1,7 +1,7 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { addHours } from 'date-fns';
-import { MongoRepository } from 'typeorm';
+import { PostgresCompatRepository } from '../database/postgres-compat.repository';
 import { DeliveryEntity, UserEntity } from '../database/entities';
 import { DeliveryService } from '../delivery/delivery.service';
 import { DeliveryResult } from '../delivery/dto';
@@ -19,9 +19,9 @@ export class MenuFlowIntegrationService {
 
   constructor(
     @InjectRepository(UserEntity)
-    private readonly users: MongoRepository<UserEntity>,
+    private readonly users: PostgresCompatRepository<UserEntity>,
     @InjectRepository(DeliveryEntity)
-    private readonly deliveries: MongoRepository<DeliveryEntity>,
+    private readonly deliveries: PostgresCompatRepository<DeliveryEntity>,
     @Inject(forwardRef(() => DeliveryService))
     private readonly deliveryService: DeliveryService,
     private readonly statusSync: MenuFlowStatusSyncService,
@@ -178,7 +178,7 @@ export class MenuFlowIntegrationService {
 
       return { accepted: true, created: true, delivery: created };
     } catch (error: any) {
-      if (error?.code === 11000 || error?.codeName === 'DuplicateKey') {
+      if (error?.code === 11000 || error?.code === '23505' || error?.codeName === 'DuplicateKey') {
         const duplicated = await this.deliveries.findOneBy({
           menuFlowOrderId: data.orderId,
         } as any);

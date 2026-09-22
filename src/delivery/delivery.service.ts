@@ -9,6 +9,7 @@ import {
   InternalServerErrorException,
   Logger,
   OnModuleInit,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -42,12 +43,36 @@ import { IfoodCreditsService } from '../ifood/ifood-credits.service';
 import { IfoodEventService } from '../ifood/ifood-event.service';
 import { sendNotificationsFor } from 'src/shared/utils/notification.functions';
 import { OrdersGateway } from '../gateway/orders.gateway';
+import { MenuFlowStatusSyncService } from '../menuflow-integration/menuflow-status-sync.service';
 
 type DashboardDateRange = {
   createdIn: string;
   createdUntil: string;
   start: Date;
   end: Date;
+};
+
+type MenuFlowDeliveryMetadata = {
+  orderId: string;
+  orderNumber: string;
+  companyId: string;
+  restaurantName?: string;
+  subtotalCents: number;
+  deliveryFeeCents: number;
+  serviceFeeCents: number;
+  discountCents: number;
+  totalCents: number;
+  paymentMethod: string;
+  needsChange?: boolean;
+  changeForCents?: number;
+  expectedChangeCents?: number;
+  items: Array<{
+    productName: string;
+    quantity: number;
+    unitPriceCents: number;
+    observation?: string;
+    addons?: Array<{ name: string; groupName?: string; priceCents: number }>;
+  }>;
 };
 
 @Injectable()
@@ -73,6 +98,9 @@ export class DeliveryService implements OnModuleInit {
     private readonly ifoodCreditsService: IfoodCreditsService,
     @Inject(forwardRef(() => IfoodEventService))
     private readonly ifoodEventService: IfoodEventService,
+    @Optional()
+    @Inject(forwardRef(() => MenuFlowStatusSyncService))
+    private readonly menuFlowStatusSync?: MenuFlowStatusSyncService,
   ) {}
 
   private isAdminOrSuperAdmin(user: UserEntity | UserRequest) {
@@ -1405,8 +1433,17 @@ export class DeliveryService implements OnModuleInit {
     );
 
     if (
+      deliveryUpdated.source === 'MENU_FLOW' ||
+      Boolean(deliveryUpdated.menuFlowOrderId)
+    ) {
+      this.menuFlowStatusSync?.queueDelivery(deliveryUpdated.id);
+    }
+
+    if (
       deliveryData.status === StatusDelivery.CANCELED &&
-      deliveryFinded.status !== StatusDelivery.CANCELED
+      deliveryFinded.status !== StatusDelivery.CANCELED &&
+      deliveryFinded.source !== 'MENU_FLOW' &&
+      !deliveryFinded.menuFlowOrderId
     ) {
       const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
         deliveryFinded.id,
@@ -1521,7 +1558,11 @@ export class DeliveryService implements OnModuleInit {
   async createDelivery(
     deliveryData: CreateDeliveryDto,
     user: UserRequest,
-    options?: { skipCreditConsumption?: boolean; creditOrderId?: string },
+    options?: {
+      skipCreditConsumption?: boolean;
+      creditOrderId?: string;
+      menuFlow?: MenuFlowDeliveryMetadata;
+    },
   ): Promise<DeliveryResult> {
     const userFinded = await this.findOneUserById(user.id);
     let establishment;
@@ -1637,6 +1678,25 @@ export class DeliveryService implements OnModuleInit {
         ifoodMerchantId,
         ifoodMerchantName,
         ifoodImportedAt: ifoodOrderId ? addHours(new Date(), -3) : undefined,
+        source: options?.menuFlow ? 'MENU_FLOW' : undefined,
+        menuFlowOrderId: options?.menuFlow?.orderId,
+        menuFlowOrderNumber: options?.menuFlow?.orderNumber,
+        menuFlowCompanyId: options?.menuFlow?.companyId,
+        menuFlowRestaurantName: options?.menuFlow?.restaurantName,
+        menuFlowSubtotalCents: options?.menuFlow?.subtotalCents,
+        menuFlowDeliveryFeeCents: options?.menuFlow?.deliveryFeeCents,
+        menuFlowServiceFeeCents: options?.menuFlow?.serviceFeeCents,
+        menuFlowDiscountCents: options?.menuFlow?.discountCents,
+        menuFlowTotalCents: options?.menuFlow?.totalCents,
+        menuFlowPaymentMethod: options?.menuFlow?.paymentMethod,
+        menuFlowNeedsChange: options?.menuFlow?.needsChange,
+        menuFlowChangeForCents: options?.menuFlow?.changeForCents,
+        menuFlowExpectedChangeCents: options?.menuFlow?.expectedChangeCents,
+        menuFlowItems: options?.menuFlow?.items,
+        menuFlowImportedAt: options?.menuFlow
+          ? addHours(new Date(), -3)
+          : undefined,
+        menuFlowSyncPending: Boolean(options?.menuFlow),
         isActive: true,
         createdBy: user.id,
         onCoursedAt,
@@ -1648,6 +1708,9 @@ export class DeliveryService implements OnModuleInit {
         DeliveryResult.fromEntity(newDelivery),
         newDelivery.establishment?.cityId,
       );
+      if (options?.menuFlow) {
+        this.menuFlowStatusSync?.queueDelivery(newDelivery.id);
+      }
       this.logger.log(
         `delivery_created id=${newDelivery.id} status=${newDelivery.status} cityId=${newDelivery.establishment?.cityId} cityName=${newDelivery.establishment?.cityName ?? ''} createdBy=${newDelivery.createdBy}`,
       );
@@ -1788,9 +1851,12 @@ export class DeliveryService implements OnModuleInit {
 
     this.ensureShopkeeperCanCancelDelivery(userFinded, deliveryFinded);
 
-    const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
-      deliveryFinded.id,
-    );
+    const isMenuFlowDelivery =
+      deliveryFinded.source === 'MENU_FLOW' ||
+      Boolean(deliveryFinded.menuFlowOrderId);
+    const ifoodLink = isMenuFlowDelivery
+      ? null
+      : await this.ifoodOrderLinkService.findByDeliveryId(deliveryFinded.id);
 
     if (ifoodLink) {
       const cancellationResult =
@@ -1812,18 +1878,27 @@ export class DeliveryService implements OnModuleInit {
     }
 
     try {
-      await this.deliveryRepository.save({
+      const cancelledDelivery = await this.deliveryRepository.save({
         ...deliveryFinded,
         status: StatusDelivery.CANCELED,
         isActive: false,
         updatedAt: addHours(new Date(), -3),
       });
 
-      await this.refundCreditForCanceledDelivery(
-        deliveryFinded,
-        'Crédito estornado por exclusão da entrega.',
-        ifoodLink?.ifoodOrderId,
-      );
+      if (
+        cancelledDelivery.source === 'MENU_FLOW' ||
+        Boolean(cancelledDelivery.menuFlowOrderId)
+      ) {
+        this.menuFlowStatusSync?.queueDelivery(cancelledDelivery.id);
+      }
+
+      if (!isMenuFlowDelivery) {
+        await this.refundCreditForCanceledDelivery(
+          deliveryFinded,
+          'Crédito estornado por exclusão da entrega.',
+          ifoodLink?.ifoodOrderId,
+        );
+      }
 
       this.ordersGateway.emitDeliveryDeleted(
         deliveryFinded.id,
@@ -2078,6 +2153,9 @@ export class DeliveryService implements OnModuleInit {
       DeliveryResult.fromEntity(updated),
       updated.establishment?.cityId,
     );
+    if (updated.source === 'MENU_FLOW' || Boolean(updated.menuFlowOrderId)) {
+      this.menuFlowStatusSync?.queueDelivery(updated.id);
+    }
     return DeliveryResult.fromEntity(updated);
   }
 
@@ -2233,6 +2311,26 @@ export class DeliveryService implements OnModuleInit {
       ifoodConfirmedAt: data.ifoodConfirmedAt ?? null,
       releasedAt: data.releasedAt ?? null,
       releasedBy: data.releasedBy ?? null,
+      source: data.source ?? null,
+      menuFlowOrderId: data.menuFlowOrderId ?? null,
+      menuFlowOrderNumber: data.menuFlowOrderNumber ?? null,
+      menuFlowCompanyId: data.menuFlowCompanyId ?? null,
+      menuFlowRestaurantName: data.menuFlowRestaurantName ?? null,
+      menuFlowSubtotalCents: data.menuFlowSubtotalCents ?? null,
+      menuFlowDeliveryFeeCents: data.menuFlowDeliveryFeeCents ?? null,
+      menuFlowServiceFeeCents: data.menuFlowServiceFeeCents ?? null,
+      menuFlowDiscountCents: data.menuFlowDiscountCents ?? null,
+      menuFlowTotalCents: data.menuFlowTotalCents ?? null,
+      menuFlowPaymentMethod: data.menuFlowPaymentMethod ?? null,
+      menuFlowNeedsChange: data.menuFlowNeedsChange ?? null,
+      menuFlowChangeForCents: data.menuFlowChangeForCents ?? null,
+      menuFlowExpectedChangeCents: data.menuFlowExpectedChangeCents ?? null,
+      menuFlowItems: data.menuFlowItems ?? null,
+      menuFlowImportedAt: data.menuFlowImportedAt ?? null,
+      menuFlowSyncPending: data.menuFlowSyncPending ?? false,
+      menuFlowLastSyncAt: data.menuFlowLastSyncAt ?? null,
+      menuFlowLastSyncedStatus: data.menuFlowLastSyncedStatus ?? null,
+      menuFlowSyncError: data.menuFlowSyncError ?? null,
       finishedAt: data.finishedAt ?? null,
       ifoodAssignDriverSynced: data.ifoodAssignDriverSynced ?? false,
       ifoodGoingToOriginSynced: data.ifoodGoingToOriginSynced ?? false,
