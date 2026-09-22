@@ -27,10 +27,6 @@ export class CreateUserDto {
   phone: string;
 
   @IsString()
-  @IsOptional()
-  managerWhatsapp?: string;
-
-  @IsString()
   user: string;
 
   @IsString()

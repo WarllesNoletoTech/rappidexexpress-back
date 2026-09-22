@@ -28,10 +28,6 @@ export class UpdateUserDto {
 
   @IsString()
   @IsOptional()
-  managerWhatsapp?: string;
-
-  @IsString()
-  @IsOptional()
   user: string;
 
   @IsString()

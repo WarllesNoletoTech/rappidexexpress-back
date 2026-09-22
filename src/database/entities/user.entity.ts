@@ -1,6 +1,10 @@
-import { ObjectId } from 'mongodb';
-import { Column, Entity, Index, ObjectIdColumn } from 'typeorm';
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 import { Permissions, UserType } from '../../shared/constants/enums.constants';
+
+const bigintNumberTransformer = {
+  to: (value?: number | string | null) => value ?? 0,
+  from: (value?: number | string | null) => Number(value ?? 0),
+};
 
 export type IfoodMerchantConfig = {
   merchantId: string;
@@ -10,12 +14,14 @@ export type IfoodMerchantConfig = {
 };
 
 @Entity()
+@Index('IDX_USER_LOGICAL_ID', ['id'], { unique: true })
+@Index('IDX_USER_USERNAME', ['user'], { unique: true })
+@Index('IDX_USER_CITY_TYPE_ACTIVE', ['cityId', 'type', 'isActive'])
 export class UserEntity {
-  @ObjectIdColumn()
-  internalId: ObjectId;
+  @PrimaryGeneratedColumn('uuid')
+  internalId: string;
 
-  @Column('uuid')
-  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 64 })
   id: string;
 
   @Column()
@@ -24,10 +30,7 @@ export class UserEntity {
   @Column()
   phone: string;
 
-  @Column({ nullable: true })
-  managerWhatsapp?: string;
-
-  @Column({ unique: true })
+  @Column()
   user: string;
 
   @Column()
@@ -36,53 +39,48 @@ export class UserEntity {
   @Column({ nullable: true })
   profileImage: string;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'text' })
   location: string;
 
-  @Column({ type: 'enum', enum: UserType })
+  @Column({ type: 'varchar' })
   type: UserType;
 
-  @Column({ type: 'enum', enum: Permissions })
+  @Column({ type: 'varchar' })
   permission: Permissions;
 
-  @Column()
+  @Column({ nullable: true })
   pix: string;
 
-  @Column()
+  @Column({ nullable: true, type: 'varchar', length: 64 })
   cityId: string;
 
-  @Column()
+  @Column({ default: true })
   isActive: boolean;
 
   @Column({ default: false })
   blocked: boolean;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'text' })
   blockedReason?: string;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'timestamptz' })
   blockedAt?: Date;
 
   @Column({ default: false })
   blockedBySystem: boolean;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'timestamptz' })
   unblockedAt?: Date;
 
   @Column({ nullable: true })
   unblockedBy?: string;
 
-  @Column()
+  @Column({ nullable: true, type: 'jsonb' })
   notification: {
     subscriptionId: string;
-    // endpoint: string;
-    // keys: {
-    //   auth: string;
-    //   p256dh: string;
-    // };
   };
 
-  @Column()
+  @Column({ nullable: true, type: 'text' })
   token: string;
 
   @Column({ default: false })
@@ -97,39 +95,30 @@ export class UserEntity {
   @Column({ nullable: true })
   ifoodMerchantId?: string;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'jsonb' })
   ifoodMerchants?: IfoodMerchantConfig[];
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'text' })
   ifoodClientId?: string;
 
-  @Column({ nullable: true })
+  @Column({ nullable: true, type: 'text' })
   ifoodClientSecret?: string;
 
-  @Column({ default: 0 })
+  @Column({ default: 0, type: 'numeric', transformer: bigintNumberTransformer })
   ifoodOrdersReleased: number;
 
-  @Column({ default: 0 })
+  @Column({ default: 0, type: 'numeric', transformer: bigintNumberTransformer })
   ifoodOrdersUsed: number;
 
-  @Column({ default: 0 })
+  @Column({ default: 0, type: 'numeric', transformer: bigintNumberTransformer })
   ifoodOrdersAvailable: number;
 
-  // Independent Menu Flow integration. These fields are intentionally separate
-  // from all iFood credentials and merchant identifiers.
-  @Column({ default: false })
-  menuFlowEnabled: boolean;
-
-  @Column({ nullable: true })
-  @Index({ unique: true, sparse: true })
-  menuFlowCompanyId?: string;
-
-  @Column()
+  @Column({ type: 'timestamptz' })
   createdAt: Date;
 
   @Column({ nullable: true })
   createdBy: string;
 
-  @Column()
+  @Column({ type: 'timestamptz' })
   updatedAt: Date;
 }
