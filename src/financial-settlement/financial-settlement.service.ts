@@ -140,7 +140,7 @@ export class FinancialSettlementService {
       where: {
         isActive: true,
         status: query.status || StatusDelivery.FINISHED,
-        establishmentId: establishment.id,
+        'establishment.id': establishment.id,
         createdAt: {
           $gte: periodStart,
           $lte: periodEnd,

@@ -373,7 +373,7 @@ describe('DeliveryService', () => {
     );
   });
 
-  it('aplica filtro de data indexável diretamente no PostgreSQL', () => {
+  it('não aplica filtro de data diretamente no where do MongoDB', () => {
     const where = (service as any).buildDeliveriesWhere(
       { type: 'superadmin' },
       {
@@ -383,13 +383,10 @@ describe('DeliveryService', () => {
       },
     );
 
-    expect(where.$or).toBeDefined();
+    expect(where.$or).toBeUndefined();
+    expect(where.finishedAt).toBeUndefined();
     expect(where.createdAt).toBeUndefined();
     expect(where.status).toEqual({ $in: [StatusDelivery.FINISHED] });
-    expect(where.$or[0].finishedAt).toEqual({
-      $gte: new Date('2026-06-23T00:00:00.000Z'),
-      $lte: new Date('2026-06-23T23:59:59.999Z'),
-    });
   });
 
   it('filtra entregas finalizadas em memória pelo dia de finishedAt', () => {

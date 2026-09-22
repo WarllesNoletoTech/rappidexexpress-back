@@ -7,25 +7,15 @@ import { UserEntity } from './user.entity';
 
 @Entity()
 @Index('IDX_DELIVERY_LOGICAL_ID', ['id'], { unique: true })
-@Index(
-  'IDX_DELIVERY_IFOOD_ORDER_MERCHANT_UNIQUE',
-  ['ifoodOrderId', 'ifoodMerchantId'],
-  { unique: true },
-)
-@Index('IDX_DELIVERY_MENU_FLOW_ORDER_UNIQUE', ['menuFlowOrderId'], {
-  unique: true,
-})
+@Index('IDX_DELIVERY_IFOOD_ORDER_MERCHANT_UNIQUE', ['ifoodOrderId', 'ifoodMerchantId'], { unique: true })
+@Index('IDX_DELIVERY_MENU_FLOW_ORDER_UNIQUE', ['menuFlowOrderId'], { unique: true })
 @Index('IDX_DELIVERY_STATUS', ['status'])
 @Index('IDX_DELIVERY_ESTABLISHMENT_CITY', ['establishmentCityId'])
 @Index('IDX_DELIVERY_MOTOBOY', ['motoboyId'])
 @Index('IDX_DELIVERY_ESTABLISHMENT', ['establishmentId'])
 @Index('IDX_DELIVERY_CREATED_AT', ['createdAt'])
 @Index('IDX_DELIVERY_FINISHED_AT', ['finishedAt'])
-@Index('IDX_DELIVERY_ACTIVE_CITY_CREATED', [
-  'isActive',
-  'establishmentCityId',
-  'createdAt',
-])
+@Index('IDX_DELIVERY_ACTIVE_CITY_CREATED', ['isActive', 'establishmentCityId', 'createdAt'])
 @Index('IDX_DELIVERY_ACTIVE_STATUS_CITY_FINISHED', [
   'isActive',
   'status',
@@ -38,21 +28,6 @@ import { UserEntity } from './user.entity';
   'status',
   'createdAt',
 ])
-@Index('IDX_DELIVERY_CITY_MOTOBOY_STATUS_FINISHED', [
-  'establishmentCityId',
-  'motoboyId',
-  'status',
-  'finishedAt',
-])
-@Index('IDX_DELIVERY_ACTIVE_ESTABLISHMENT_STATUS_CREATED', [
-  'isActive',
-  'establishmentId',
-  'status',
-  'createdAt',
-])
-@Index('IDX_DELIVERY_STATUS_FINISHED', ['status', 'finishedAt'])
-@Index('IDX_DELIVERY_ESTABLISHMENT_FINISHED', ['establishmentId', 'finishedAt'])
-@Index('IDX_DELIVERY_MOTOBOY_FINISHED', ['motoboyId', 'finishedAt'])
 export class DeliveryEntity {
   @PrimaryGeneratedColumn('uuid')
   internalId: string;

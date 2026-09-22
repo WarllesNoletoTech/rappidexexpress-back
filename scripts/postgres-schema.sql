@@ -254,11 +254,6 @@ CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_STATUS_CITY_CREATED" ON "deliver
 CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_MOTOBOY_FINISHED" ON "delivery_entity" ("isActive", "motoboyId", "finishedAt" DESC);
 CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_ESTABLISHMENT_FINISHED" ON "delivery_entity" ("isActive", "establishmentId", "finishedAt" DESC);
 CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_MOTOBOY_STATUS_CREATED" ON "delivery_entity" ("isActive", "motoboyId", "status", "createdAt" DESC);
-CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_CITY_MOTOBOY_STATUS_FINISHED" ON "delivery_entity" ("establishmentCityId", "motoboyId", "status", "finishedAt" DESC);
-CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ACTIVE_ESTABLISHMENT_STATUS_CREATED" ON "delivery_entity" ("isActive", "establishmentId", "status", "createdAt" DESC);
-CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_STATUS_FINISHED" ON "delivery_entity" ("status", "finishedAt" DESC);
-CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_ESTABLISHMENT_FINISHED" ON "delivery_entity" ("establishmentId", "finishedAt" DESC);
-CREATE INDEX IF NOT EXISTS "IDX_DELIVERY_MOTOBOY_FINISHED" ON "delivery_entity" ("motoboyId", "finishedAt" DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_DELIVERY_IFOOD_ORDER_MERCHANT_UNIQUE"
   ON "delivery_entity" ("ifoodOrderId", "ifoodMerchantId");
 CREATE UNIQUE INDEX IF NOT EXISTS "IDX_DELIVERY_MENU_FLOW_ORDER_UNIQUE"
