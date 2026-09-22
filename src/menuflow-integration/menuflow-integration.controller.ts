@@ -13,6 +13,11 @@ export class MenuFlowIntegrationController {
     return this.integration.createDelivery(body);
   }
 
+  @Post('deliveries/:menuFlowOrderId/release')
+  releaseDelivery(@Param('menuFlowOrderId') orderId: string) {
+    return this.integration.releaseDelivery(orderId);
+  }
+
   @Post('deliveries/:menuFlowOrderId/cancel')
   cancelDelivery(@Param('menuFlowOrderId') orderId: string) {
     return this.integration.cancelDelivery(orderId);

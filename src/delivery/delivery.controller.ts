@@ -11,6 +11,7 @@ import {
   UnauthorizedException,
   UseGuards,
   Logger,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { DeliveryService } from './delivery.service';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -119,7 +120,7 @@ export class DeliveryController {
       return await this.deliveryService.listDeliveries(user, queryParams);
     } catch (error: any) {
       this.logger.error(
-        `GET /api/delivery falhou. userType=${user?.type || 'N/A'} pgCode=${error?.code || 'N/A'} message=${error?.message || error}`,
+        `GET /api/delivery falhou. userId=${user?.id || 'N/A'} userType=${user?.type || 'N/A'} query=${JSON.stringify(queryParams || {})} message=${error?.message || error}`,
         error?.stack,
       );
       throw error;
@@ -140,12 +141,20 @@ export class DeliveryController {
     @User() user: UserRequest,
     @Query() queryParams: ListDeliveriesQueryDTO,
   ) {
+    this.logger.log(
+      `GET /api/delivery/counts userId=${user?.id || 'N/A'} userType=${
+        user?.type || 'N/A'
+      } cityId=${queryParams?.cityId || 'N/A'} createdIn=${
+        queryParams?.createdIn || 'N/A'
+      } createdUntil=${queryParams?.createdUntil || 'N/A'}`,
+    );
+
     try {
       return await this.deliveryService.getDashboardCounts(user, queryParams);
     } catch (error: any) {
       this.logger.error(
-        `GET /api/delivery/counts falhou. userType=${user?.type || 'N/A'} pgCode=${
-          error?.code || 'N/A'
+        `GET /api/delivery/counts falhou. userId=${user?.id || 'N/A'} userType=${
+          user?.type || 'N/A'
         } cityId=${queryParams?.cityId || 'N/A'} createdIn=${
           queryParams?.createdIn || 'N/A'
         } createdUntil=${queryParams?.createdUntil || 'N/A'} message=${
@@ -153,14 +162,9 @@ export class DeliveryController {
         }`,
         error?.stack,
       );
-      return {
-        pending: 0,
-        assigned: 0,
-        waitingRelease: 0,
-        totalEntregas: 0,
-        valorAdminPorEntrega: 0,
-        totalValorAdmin: 0,
-      };
+      throw new InternalServerErrorException(
+        'Não foi possível carregar o contador de entregas.',
+      );
     }
   }
 

@@ -1,30 +1,36 @@
-/* eslint-disable no-console */
-const { Client } = require('pg');
+const { MongoClient } = require('mongodb');
 
-async function main() {
-  const connectionString = String(process.env.DATABASE_URL || '').trim();
-  if (!connectionString) throw new Error('DATABASE_URL não configurada.');
+(async () => {
+  const client = new MongoClient('mongodb://127.0.0.1:27017');
 
-  const pg = new Client({
-    connectionString,
-    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-  });
-
-  await pg.connect();
   try {
-    const { rows } = await pg.query(
-      `SELECT "id", "name", "type", "cityId", "user"
-       FROM "user_entity"
-       WHERE "type" IN ('shopkeeper', 'shopkeeperadmin')
-       ORDER BY "name" ASC`,
-    );
-    console.log(JSON.stringify(rows, null, 2));
-  } finally {
-    await pg.end();
-  }
-}
+    await client.connect();
 
-main().catch((error) => {
-  console.error('Erro ao consultar lojistas:', error.message || error);
-  process.exitCode = 1;
-});
+    const db = client.db('rappidexexpress');
+
+    const docs = await db
+      .collection('user_entity')
+      .find(
+        {
+          type: { $in: ['shopkeeper', 'shopkeeperadmin'] },
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            name: 1,
+            type: 1,
+            cityId: 1,
+            user: 1,
+          },
+        },
+      )
+      .toArray();
+
+    console.log(JSON.stringify(docs, null, 2));
+  } catch (error) {
+    console.error('Erro ao consultar lojistas:', error);
+  } finally {
+    await client.close();
+  }
+})();

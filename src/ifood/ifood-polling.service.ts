@@ -1,4 +1,3 @@
-import { PostgresCompatRepository } from '../database/postgres-compat.repository';
 import {
   Injectable,
   InternalServerErrorException,
@@ -6,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { MongoRepository } from 'typeorm';
 import { UserEntity } from '../database/entities';
 import { AuthContext, IfoodAuthService } from './ifood-auth.service';
 import { IfoodHttpService } from './ifood-http.service';
@@ -22,7 +22,7 @@ export class IfoodPollingService {
     private readonly ifoodHttpService: IfoodHttpService,
     private readonly configService: ConfigService,
     @InjectRepository(UserEntity)
-    private readonly userRepository: PostgresCompatRepository<UserEntity>,
+    private readonly userRepository: MongoRepository<UserEntity>,
   ) {}
 
   async pollEvents() {
@@ -40,21 +40,15 @@ export class IfoodPollingService {
         );
       }
 
-      const merchantAuthContexts: Array<{
-        merchantId: string;
-        authContext: AuthContext;
-      }> = [];
-      // resolveAuthContext pode consultar usuários. Resolver em sequência evita
-      // que um ciclo de background ocupe as cinco conexões do pool.
-      for (const merchantId of merchantIds) {
-        merchantAuthContexts.push({
+      const merchantAuthContexts = await Promise.all(
+        merchantIds.map(async (merchantId) => ({
           merchantId,
           authContext: await this.ifoodAuthService.resolveAuthContext({
             merchantId,
           }),
-        });
-      }
-
+        })),
+      );
+      
       const merchantsByAuthContext = merchantAuthContexts.reduce(
         (acc, entry) => {
           if (!acc[entry.authContext.cacheKey]) {
@@ -144,7 +138,7 @@ export class IfoodPollingService {
               await this.sleep(delayBetweenBatchesMs);
             }
           }
-
+          
           pollingProfilesSummary.push({
             profileKey:
               currentContextEntry.authContext.profileKey ||
@@ -194,9 +188,7 @@ export class IfoodPollingService {
     });
   }
 
-  async acknowledgeEvents(
-    eventIds: Array<string | { id: string; merchantId?: string }>,
-  ) {
+  async acknowledgeEvents(eventIds: Array<string | { id: string; merchantId?: string }>) {
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
       return;
     }
@@ -350,7 +342,7 @@ export class IfoodPollingService {
 
     return uniqueMerchants;
   }
-
+  
   private maskMerchantId(merchantId?: string) {
     const normalized = String(merchantId || '').trim();
     if (!normalized) {

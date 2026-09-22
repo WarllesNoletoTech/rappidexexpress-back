@@ -23,19 +23,9 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "load:dashboard": "node scripts/load-dashboard.js",
     "diagnose:mongo": "node scripts/diagnose-mongo-legacy.js",
-    "db:schema": "node scripts/postgres-schema.js",
-    "db:verify": "node scripts/verify-postgres.js",
-    "migrate:mongo-to-postgres": "node scripts/migrate-mongo-to-postgres.js",
-    "migrate:mongo-to-postgres:apply": "node scripts/migrate-mongo-to-postgres.js --apply",
-    "list:shopkeepers": "node list-shopkeepers.js",
-    "import:mongo-history": "node scripts/import-mongo-history.js",
-    "import:mongo-history:apply": "node scripts/import-mongo-history.js --apply",
-    "import:mongo-history:full": "node scripts/import-mongo-history.js --full",
-    "import:mongo-history:apply:full": "node scripts/import-mongo-history.js --apply --full",
-    "sync:mongo-final": "node scripts/import-mongo-history.js --sync-existing",
-    "sync:mongo-final:apply": "node scripts/import-mongo-history.js --sync-existing --apply"
+    "check:menuflow-integration": "node scripts/migrate-menuflow-integration.js",
+    "migrate:menuflow-integration": "node scripts/migrate-menuflow-integration.js --apply"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -66,8 +56,7 @@
     "typeorm": "^0.3.17",
     "uuid": "^9.0.1",
     "web-push": "^3.6.7",
-    "winston": "^3.11.0",
-    "pg": "^8.13.1"
+    "winston": "^3.11.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",

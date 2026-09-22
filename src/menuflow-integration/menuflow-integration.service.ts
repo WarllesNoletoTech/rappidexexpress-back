@@ -111,7 +111,6 @@ export class MenuFlowIntegrationService {
       .join(' | ');
 
     const observation = [
-      `Pedido do Menu Flow #${data.orderNumber}`,
       itemObservation || null,
       data.needsChange && data.changeForCents
         ? `Troco para R$ ${(data.changeForCents / 100).toFixed(2).replace('.', ',')}`
@@ -195,6 +194,72 @@ export class MenuFlowIntegrationService {
     }
   }
 
+  async releaseDelivery(menuFlowOrderId: string) {
+    const delivery = await this.deliveries.findOneBy({
+      menuFlowOrderId,
+    } as any);
+    if (!delivery) {
+      return { found: false, released: false };
+    }
+
+    if (delivery.status === StatusDelivery.CANCELED) {
+      return {
+        found: true,
+        released: false,
+        cancelled: true,
+        delivery: DeliveryResult.fromEntity(delivery),
+      };
+    }
+    if (delivery.status === StatusDelivery.FINISHED) {
+      return {
+        found: true,
+        released: false,
+        finished: true,
+        delivery: DeliveryResult.fromEntity(delivery),
+      };
+    }
+    if (delivery.status !== StatusDelivery.AWAITING_RELEASE) {
+      return {
+        found: true,
+        released: true,
+        alreadyReleased: true,
+        delivery: DeliveryResult.fromEntity(delivery),
+      };
+    }
+
+    const establishmentId = delivery.establishment?.id;
+    if (!establishmentId) {
+      throw new Error('A entrega Menu Flow não possui estabelecimento Rappidex vinculado.');
+    }
+    const establishment = await this.users.findOneBy({ id: establishmentId } as any);
+    if (!establishment) {
+      throw new Error('Estabelecimento Rappidex da entrega não foi encontrado.');
+    }
+
+    const released = await this.deliveryService.releaseDelivery(
+      delivery.id,
+      {
+        id: establishment.id,
+        phone: establishment.phone || '',
+        user: establishment.user,
+        type: establishment.type,
+        permission: establishment.permission,
+        cityId: establishment.cityId,
+      },
+      undefined,
+    );
+
+    this.logger.log(
+      `Menu Flow -> Rappidex liberado orderId=${menuFlowOrderId} deliveryId=${delivery.id} status=${released.status}`,
+    );
+
+    return {
+      found: true,
+      released: true,
+      delivery: released,
+    };
+  }
+
   async cancelDelivery(menuFlowOrderId: string) {
     const delivery = await this.deliveries.findOneBy({
       menuFlowOrderId,
@@ -208,6 +273,23 @@ export class MenuFlowIntegrationService {
         found: true,
         cancelled: false,
         finished: true,
+        deliveryId: delivery.id,
+      };
+    }
+
+    const assignedStatuses = [
+      StatusDelivery.ONCOURSE,
+      StatusDelivery.ARRIVED_AT_STORE,
+      StatusDelivery.COLLECTED,
+      StatusDelivery.ARRIVED_AT_DESTINATION,
+      StatusDelivery.AWAITING_CODE,
+    ];
+    if (assignedStatuses.includes(delivery.status)) {
+      return {
+        found: true,
+        cancelled: false,
+        locked: true,
+        status: delivery.status,
         deliveryId: delivery.id,
       };
     }

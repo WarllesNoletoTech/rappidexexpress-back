@@ -1,5 +1,3 @@
-import { PostgresCompatRepository } from '../database/postgres-compat.repository';
-import { toSafeUserLogSnapshot } from '../shared/utils/user-log-snapshot';
 import {
   BadRequestException,
   forwardRef,
@@ -9,6 +7,7 @@ import {
   InternalServerErrorException,
   Logger,
   OnModuleInit,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -18,6 +17,8 @@ import {
   UserEntity,
 } from '../database/entities';
 import { InjectRepository } from '@nestjs/typeorm';
+import { MongoRepository } from 'typeorm';
+import { ObjectId } from 'mongodb';
 import { v4 as uuid } from 'uuid';
 import { addHours } from 'date-fns';
 
@@ -42,12 +43,36 @@ import { IfoodCreditsService } from '../ifood/ifood-credits.service';
 import { IfoodEventService } from '../ifood/ifood-event.service';
 import { sendNotificationsFor } from 'src/shared/utils/notification.functions';
 import { OrdersGateway } from '../gateway/orders.gateway';
+import { MenuFlowStatusSyncService } from '../menuflow-integration/menuflow-status-sync.service';
 
 type DashboardDateRange = {
   createdIn: string;
   createdUntil: string;
   start: Date;
   end: Date;
+};
+
+type MenuFlowDeliveryMetadata = {
+  orderId: string;
+  orderNumber: string;
+  companyId: string;
+  restaurantName?: string;
+  subtotalCents: number;
+  deliveryFeeCents: number;
+  serviceFeeCents: number;
+  discountCents: number;
+  totalCents: number;
+  paymentMethod: string;
+  needsChange?: boolean;
+  changeForCents?: number;
+  expectedChangeCents?: number;
+  items: Array<{
+    productName: string;
+    quantity: number;
+    unitPriceCents: number;
+    observation?: string;
+    addons?: Array<{ name: string; groupName?: string; priceCents: number }>;
+  }>;
 };
 
 @Injectable()
@@ -57,13 +82,13 @@ export class DeliveryService implements OnModuleInit {
   blockDeliverys = false;
   constructor(
     @InjectRepository(UserEntity)
-    private readonly userRepository: PostgresCompatRepository<UserEntity>,
+    private readonly userRepository: MongoRepository<UserEntity>,
     @InjectRepository(DeliveryEntity)
-    private readonly deliveryRepository: PostgresCompatRepository<DeliveryEntity>,
+    private readonly deliveryRepository: MongoRepository<DeliveryEntity>,
     @InjectRepository(LogEntity)
-    private readonly logRepository: PostgresCompatRepository<LogEntity>,
+    private readonly logRepository: MongoRepository<LogEntity>,
     @InjectRepository(CityEntity)
-    private readonly cityRepository: PostgresCompatRepository<CityEntity>,
+    private readonly cityRepository: MongoRepository<CityEntity>,
     private readonly ordersGateway: OrdersGateway,
     @Inject(forwardRef(() => IfoodOrdersService))
     private readonly ifoodOrdersService: IfoodOrdersService,
@@ -73,6 +98,9 @@ export class DeliveryService implements OnModuleInit {
     private readonly ifoodCreditsService: IfoodCreditsService,
     @Inject(forwardRef(() => IfoodEventService))
     private readonly ifoodEventService: IfoodEventService,
+    @Optional()
+    @Inject(forwardRef(() => MenuFlowStatusSyncService))
+    private readonly menuFlowStatusSync?: MenuFlowStatusSyncService,
   ) {}
 
   private isAdminOrSuperAdmin(user: UserEntity | UserRequest) {
@@ -230,7 +258,7 @@ export class DeliveryService implements OnModuleInit {
 
     const motoboy = nextDelivery?.motoboy || previousDelivery?.motoboy;
 
-    if (!motoboy) {
+    if (!motoboy && !previousDelivery.ifoodAssignDriverSynced) {
       this.logger.warn(
         `Não foi possível sincronizar ACAMINHO sem motoboy. DeliveryId: ${previousDelivery?.id}.`,
       );
@@ -238,7 +266,7 @@ export class DeliveryService implements OnModuleInit {
     }
 
     if (!previousDelivery.ifoodAssignDriverSynced) {
-      await this.sendIfoodStatusUpdate({
+      const response = await this.sendIfoodStatusUpdate({
         deliveryId: previousDelivery.id,
         ifoodOrderId: orderId,
         merchantId,
@@ -248,15 +276,22 @@ export class DeliveryService implements OnModuleInit {
         request: () =>
           this.ifoodOrdersService.assignDriver(orderId, motoboy, merchantId),
       });
-      flags.ifoodAssignDriverSynced = true;
+      if ((response as any)?.accepted === true) {
+        flags.ifoodAssignDriverSynced = true;
+        previousDelivery.ifoodAssignDriverSynced = true;
+      }
 
       this.logger.log(
         `assignDriver enviado ao iFood quando motoboy aceitou entrega. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
       );
     }
 
-    if (!previousDelivery.ifoodGoingToOriginSynced) {
-      await this.sendIfoodStatusUpdate({
+    if (
+      !previousDelivery.ifoodGoingToOriginSynced &&
+      (previousDelivery.ifoodAssignDriverSynced ||
+        flags.ifoodAssignDriverSynced)
+    ) {
+      const response = await this.sendIfoodStatusUpdate({
         deliveryId: previousDelivery.id,
         ifoodOrderId: orderId,
         merchantId,
@@ -266,7 +301,10 @@ export class DeliveryService implements OnModuleInit {
         request: () =>
           this.ifoodOrdersService.notifyGoingToOrigin(orderId, merchantId),
       });
-      flags.ifoodGoingToOriginSynced = true;
+      if ((response as any)?.accepted === true) {
+        flags.ifoodGoingToOriginSynced = true;
+        previousDelivery.ifoodGoingToOriginSynced = true;
+      }
 
       this.logger.log(
         `goingToOrigin enviado ao iFood quando pedido ficou ACAMINHO. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
@@ -351,8 +389,12 @@ export class DeliveryService implements OnModuleInit {
           merchantId,
         );
 
-        if (!previousDelivery.ifoodArrivedAtOriginSynced) {
-          await this.sendIfoodStatusUpdate({
+        if (
+          !previousDelivery.ifoodArrivedAtOriginSynced &&
+          (previousDelivery.ifoodGoingToOriginSynced ||
+            flags.ifoodGoingToOriginSynced)
+        ) {
+          const response = await this.sendIfoodStatusUpdate({
             deliveryId: previousDelivery.id,
             ifoodOrderId: orderId,
             merchantId,
@@ -365,7 +407,10 @@ export class DeliveryService implements OnModuleInit {
                 merchantId,
               ),
           });
-          flags.ifoodArrivedAtOriginSynced = true;
+          if ((response as any)?.accepted === true) {
+            flags.ifoodArrivedAtOriginSynced = true;
+            previousDelivery.ifoodArrivedAtOriginSynced = true;
+          }
           this.logger.log(
             `arrivedAtOrigin enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
           );
@@ -382,8 +427,35 @@ export class DeliveryService implements OnModuleInit {
           merchantId,
         );
 
-        if (!previousDelivery.ifoodDispatchSynced) {
-          await this.sendIfoodStatusUpdate({
+        if (
+          !previousDelivery.ifoodArrivedAtOriginSynced &&
+          !flags.ifoodArrivedAtOriginSynced
+        ) {
+          const response = await this.sendIfoodStatusUpdate({
+            deliveryId: previousDelivery.id,
+            ifoodOrderId: orderId,
+            merchantId,
+            oldStatus: previousDelivery.status,
+            newStatus: StatusDelivery.COLLECTED,
+            action: 'arrivedAtOrigin',
+            request: () =>
+              this.ifoodOrdersService.notifyArrivedAtOrigin(
+                orderId,
+                merchantId,
+              ),
+          });
+          if ((response as any)?.accepted === true) {
+            flags.ifoodArrivedAtOriginSynced = true;
+            previousDelivery.ifoodArrivedAtOriginSynced = true;
+          }
+        }
+
+        if (
+          !previousDelivery.ifoodDispatchSynced &&
+          (previousDelivery.ifoodArrivedAtOriginSynced ||
+            flags.ifoodArrivedAtOriginSynced)
+        ) {
+          const response = await this.sendIfoodStatusUpdate({
             deliveryId: previousDelivery.id,
             ifoodOrderId: orderId,
             merchantId,
@@ -396,7 +468,10 @@ export class DeliveryService implements OnModuleInit {
                 merchantId,
               ),
           });
-          flags.ifoodDispatchSynced = true;
+          if ((response as any)?.accepted === true) {
+            flags.ifoodDispatchSynced = true;
+            previousDelivery.ifoodDispatchSynced = true;
+          }
           this.logger.log(
             `dispatch enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
           );
@@ -409,8 +484,9 @@ export class DeliveryService implements OnModuleInit {
         nextStatus === StatusDelivery.ARRIVED_AT_DESTINATION ||
         nextStatus === StatusDelivery.AWAITING_CODE
       ) {
+        let response: any;
         if (!previousDelivery.ifoodArrivedAtDestinationSynced) {
-          await this.sendIfoodStatusUpdate({
+          response = await this.sendIfoodStatusUpdate({
             deliveryId: previousDelivery.id,
             ifoodOrderId: orderId,
             merchantId,
@@ -427,7 +503,10 @@ export class DeliveryService implements OnModuleInit {
             `arrivedAtDestination enviado para iFood. OrderId: ${orderId}. MerchantId: ${merchantId}.`,
           );
         }
-        return { ifoodArrivedAtDestinationSynced: true };
+        return previousDelivery.ifoodArrivedAtDestinationSynced ||
+          response?.accepted === true
+          ? { ifoodArrivedAtDestinationSynced: true }
+          : {};
       }
 
       if (nextStatus === StatusDelivery.CANCELED) {
@@ -559,6 +638,21 @@ export class DeliveryService implements OnModuleInit {
       );
 
       if (
+        [
+          StatusDelivery.ONCOURSE,
+          StatusDelivery.ARRIVED_AT_STORE,
+          StatusDelivery.COLLECTED,
+          StatusDelivery.ARRIVED_AT_DESTINATION,
+          StatusDelivery.AWAITING_CODE,
+        ].includes(nextStatus)
+      ) {
+        this.logger.warn(
+          `sincronização iFood pendente deliveryId=${previousDelivery.id} statusLocalNovo=${nextStatus} motivo=${error?.message || error}`,
+        );
+        return {};
+      }
+
+      if (
         error instanceof BadRequestException ||
         error instanceof InternalServerErrorException
       ) {
@@ -634,9 +728,100 @@ export class DeliveryService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    this.logger.log(
-      'PostgreSQL ativo: índices de delivery são gerenciados pelo schema SQL do Rappidex.',
-    );
+    await this.ensureDeliveryIndexes();
+  }
+
+  private async ensureDeliveryIndexes() {
+    const indexes = [
+      { keys: { status: 1 }, options: { name: 'IDX_DELIVERIES_STATUS' } },
+      {
+        keys: { 'establishment.cityId': 1 },
+        options: { name: 'IDX_DELIVERIES_CITY_ID' },
+      },
+      {
+        keys: { 'motoboy.id': 1 },
+        options: { name: 'IDX_DELIVERIES_MOTOBOY_ID' },
+      },
+      {
+        keys: { 'establishment.id': 1 },
+        options: { name: 'IDX_DELIVERIES_ESTABLISHMENT_ID' },
+      },
+      {
+        keys: { createdAt: -1 },
+        options: { name: 'IDX_DELIVERIES_CREATED_AT' },
+      },
+      {
+        keys: { updatedAt: -1 },
+        options: { name: 'IDX_DELIVERIES_UPDATED_AT' },
+      },
+      {
+        keys: { finishedAt: -1 },
+        options: { name: 'IDX_DELIVERIES_FINISHED_AT' },
+      },
+      { keys: { isActive: 1 }, options: { name: 'IDX_DELIVERIES_IS_ACTIVE' } },
+      {
+        keys: { isActive: 1, 'establishment.cityId': 1, createdAt: -1 },
+        options: { name: 'IDX_DELIVERIES_ACTIVE_CITY_CREATED_AT' },
+      },
+      {
+        keys: {
+          isActive: 1,
+          status: 1,
+          'establishment.cityId': 1,
+          finishedAt: -1,
+        },
+        options: { name: 'IDX_DELIVERIES_ACTIVE_STATUS_CITY_FINISHED_AT' },
+      },
+      {
+        keys: {
+          isActive: 1,
+          status: 1,
+          'establishment.cityId': 1,
+          createdAt: -1,
+        },
+        options: { name: 'IDX_DELIVERIES_ACTIVE_STATUS_CITY_CREATED_AT' },
+      },
+      {
+        keys: { isActive: 1, 'motoboy.id': 1, finishedAt: -1 },
+        options: { name: 'IDX_DELIVERIES_ACTIVE_MOTOBOY_FINISHED_AT' },
+      },
+      {
+        keys: { isActive: 1, 'establishment.id': 1, finishedAt: -1 },
+        options: { name: 'IDX_DELIVERIES_ACTIVE_ESTABLISHMENT_FINISHED_AT' },
+      },
+      {
+        keys: { isActive: 1, 'motoboy.id': 1, status: 1, createdAt: -1 },
+        options: { name: 'IDX_DELIVERIES_ACTIVE_MOTOBOY_STATUS_CREATED_AT' },
+      },
+      {
+        keys: { ifoodOrderId: 1, ifoodMerchantId: 1 },
+        options: {
+          name: 'IDX_DELIVERIES_IFOOD_ORDER_MERCHANT_UNIQUE',
+          unique: true,
+          partialFilterExpression: {
+            ifoodOrderId: { $type: 'string' },
+            ifoodMerchantId: { $type: 'string' },
+          },
+        },
+      },
+    ];
+
+    for (const index of indexes) {
+      try {
+        await this.deliveryRepository.createCollectionIndex(
+          index.keys,
+          index.options,
+        );
+        this.logger.log(
+          `Índice MongoDB garantido em delivery: ${index.options.name}`,
+        );
+      } catch (error: any) {
+        this.logger.error(
+          `Falha ao garantir índice MongoDB em delivery: ${index.options.name}. keys=${JSON.stringify(index.keys)} unique=${Boolean((index.options as any).unique)} code=${error?.code || 'N/A'} codeName=${error?.codeName || 'N/A'} message=${error?.message || error}. Rode npm run diagnose:mongo no Heroku para localizar documentos duplicados/incompatíveis.`,
+          error?.stack,
+        );
+      }
+    }
   }
 
   private shouldSyncIfoodInBackground(status?: StatusDelivery) {
@@ -701,7 +886,7 @@ export class DeliveryService implements OnModuleInit {
       where: 'Criação de um delivery',
       type: 'Log para notificações',
       error: 'Sem error',
-      user: toSafeUserLogSnapshot(userFinded),
+      user: userFinded,
       status: 'Notificação enviada.',
     };
 
@@ -750,44 +935,32 @@ export class DeliveryService implements OnModuleInit {
     const requestStartedAt = Date.now();
     const userForRequest = await this.findOneUserById(user.id);
 
-    const requestedPage = Number(queryParams.page || 1);
-    const requestedItemsPerPage = Number(queryParams.itemsPerPage || 100);
-    const page = Number.isFinite(requestedPage)
-      ? Math.max(1, Math.floor(requestedPage))
-      : 1;
-    const itemsPerPageParam = Number.isFinite(requestedItemsPerPage)
-      ? Math.min(500, Math.max(1, Math.floor(requestedItemsPerPage)))
-      : 100;
+    const page = Number(queryParams.page || 1);
+    const itemsPerPageParam = Number(queryParams.itemsPerPage || 100);
     const skip = (page - 1) * itemsPerPageParam;
     const take = itemsPerPageParam;
     const where = this.buildDeliveriesWhere(userForRequest, queryParams);
-    const sortField = this.shouldUseFinishedDateFilter(queryParams)
-      ? 'finishedAt'
-      : 'createdAt';
 
     const shouldIncludeDashboardCounts = this.parseBooleanQuery(
       queryParams.includeDashboardCounts,
     );
-    const shouldIncludeTotal =
-      queryParams.includeTotal === undefined ||
-      this.parseBooleanQuery(queryParams.includeTotal);
+
+    const dashboardCountsPromise = shouldIncludeDashboardCounts
+      ? this.getDashboardCountsByUser(userForRequest, queryParams)
+      : Promise.resolve(undefined);
 
     const queryStartedAt = Date.now();
-    // Uma abertura do dashboard deve ocupar somente uma conexão por vez. Em
-    // especial, includeTotal=false não agenda COUNT no pool nem em paralelo.
-    const deliveries = await this.deliveryRepository.find({
-      relations: { motoboy: true, establishment: true },
-      where,
-      skip,
-      take,
-      order: { [sortField]: 'DESC', createdAt: 'DESC' } as any,
-    });
-    const count = shouldIncludeTotal
-      ? await this.deliveryRepository.count(where)
-      : deliveries.length;
-    const dashboardCounts = shouldIncludeDashboardCounts
-      ? await this.getDashboardCountsByUser(userForRequest, queryParams)
-      : undefined;
+    const [deliveries, count, dashboardCounts] = await Promise.all([
+      this.deliveryRepository.find({
+        relations: { motoboy: true, establishment: true },
+        where,
+        skip,
+        take,
+        order: { createdAt: 'ASC' } as any,
+      }),
+      this.deliveryRepository.count(where),
+      dashboardCountsPromise,
+    ]);
     const queryDurationMs = Date.now() - queryStartedAt;
 
     const ifoodLinks = await this.ifoodOrderLinkService.findByDeliveryIds(
@@ -810,17 +983,17 @@ export class DeliveryService implements OnModuleInit {
     });
 
     const totalDurationMs = Date.now() - requestStartedAt;
-    if (totalDurationMs >= 500) {
-      this.logger.warn(
-        `GET /api/delivery performance userType=${userForRequest.type} returned=${deliveries.length} total=${count} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
-      );
-    }
+    this.logger.log(
+      `GET /api/delivery performance userId=${userForRequest.id} userType=${userForRequest.type} filters=${JSON.stringify(
+        queryParams,
+      )} returned=${deliveries.length} total=${count} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
+    );
 
     return ListDeliverysResult.fromEntities(
       deliveriesWithSource as any,
       deliveries.length,
       page,
-      shouldIncludeTotal ? count : deliveries.length,
+      count,
       dashboardCounts,
     );
   }
@@ -844,6 +1017,12 @@ export class DeliveryService implements OnModuleInit {
     );
     const dateRange = this.resolveDashboardDateRange(countQueryParams);
 
+    this.logger.log(
+      `delivery_counts userId=${userForRequest.id} userType=${userForRequest.type} cityId=${
+        countQueryParams.cityId || 'N/A'
+      } createdIn=${dateRange.createdIn} createdUntil=${dateRange.createdUntil}`,
+    );
+
     if (
       userForRequest.type === UserType.SUPERADMIN &&
       !countQueryParams.cityId
@@ -864,119 +1043,54 @@ export class DeliveryService implements OnModuleInit {
       };
     }
 
-    const cityId = countQueryParams.cityId || userForRequest.cityId;
+    const pendingWhere = this.buildDeliveriesWhere(userForRequest, {
+      ...countQueryParams,
+      status: StatusDelivery.PENDING,
+    } as ListDeliveriesQueryDTO);
+    Object.assign(
+      pendingWhere,
+      this.buildDashboardDateWhere(StatusDelivery.PENDING, dateRange),
+    );
+
+    const assignedWhere = this.buildAssignedDeliveriesWhere(
+      userForRequest,
+      countQueryParams,
+    );
+    Object.assign(
+      assignedWhere,
+      this.buildDashboardDateWhere(StatusDelivery.ONCOURSE, dateRange),
+    );
+
+    const waitingReleaseWhere = this.buildDeliveriesWhere(userForRequest, {
+      ...countQueryParams,
+      status: StatusDelivery.AWAITING_RELEASE,
+    } as ListDeliveriesQueryDTO);
+    Object.assign(
+      waitingReleaseWhere,
+      this.buildDashboardDateWhere(StatusDelivery.AWAITING_RELEASE, dateRange),
+    );
+
+    const adminFinancialWhere = this.buildDeliveriesWhere(userForRequest, {
+      ...countQueryParams,
+      status: StatusDelivery.FINISHED,
+    } as ListDeliveriesQueryDTO);
+    Object.assign(
+      adminFinancialWhere,
+      this.buildDashboardDateWhere(StatusDelivery.FINISHED, dateRange),
+    );
 
     try {
-      // Uma única agregação substitui quatro COUNT(*) simultâneos. Isso evita
-      // consumir quase todo o pool (DATABASE_POOL_MAX=5) por dashboard aberto.
-      const qb = this.deliveryRepository
-        .createQueryBuilder('delivery')
-        .select(
-          `COUNT(*) FILTER (
-            WHERE delivery."isActive" = true
-              AND delivery."status" = :pendingStatus
-              AND delivery."createdAt" BETWEEN :startAt AND :endAt
-              ${
-                userForRequest.type === UserType.SHOPKEEPER ||
-                userForRequest.type === UserType.SHOPKEEPERADMIN
-                  ? 'AND delivery."establishmentId" = :requesterId'
-                  : ''
-              }
-          )`,
-          'pending',
-        )
-        .addSelect(
-          `COUNT(*) FILTER (
-            WHERE delivery."isActive" = true
-              AND delivery."motoboyId" IS NOT NULL
-              AND delivery."status" NOT IN (:...terminalStatuses)
-              AND delivery."createdAt" BETWEEN :startAt AND :endAt
-              ${
-                userForRequest.type === UserType.MOTOBOY
-                  ? 'AND delivery."motoboyId" = :requesterId'
-                  : userForRequest.type === UserType.SHOPKEEPER ||
-                      userForRequest.type === UserType.SHOPKEEPERADMIN
-                    ? 'AND delivery."establishmentId" = :requesterId'
-                    : ''
-              }
-          )`,
-          'assigned',
-        )
-        .addSelect(
-          userForRequest.type === UserType.MOTOBOY
-            ? '0'
-            : `COUNT(*) FILTER (
-                WHERE delivery."isActive" = true
-                  AND delivery."status" = :waitingReleaseStatus
-                  AND delivery."createdAt" BETWEEN :startAt AND :endAt
-                  ${
-                    userForRequest.type === UserType.SHOPKEEPER ||
-                    userForRequest.type === UserType.SHOPKEEPERADMIN
-                      ? 'AND delivery."establishmentId" = :requesterId'
-                      : ''
-                  }
-              )`,
-          'waitingRelease',
-        )
-        .addSelect(
-          `COUNT(*) FILTER (
-            WHERE delivery."isActive" = true
-              AND delivery."status" = :finishedStatus
-              AND (
-                delivery."finishedAt" BETWEEN :startAt AND :endAt
-                OR (
-                  delivery."finishedAt" IS NULL
-                  AND delivery."updatedAt" BETWEEN :startAt AND :endAt
-                )
-                OR (
-                  delivery."finishedAt" IS NULL
-                  AND delivery."updatedAt" IS NULL
-                  AND delivery."createdAt" BETWEEN :startAt AND :endAt
-                )
-              )
-              ${
-                userForRequest.type === UserType.MOTOBOY
-                  ? 'AND delivery."motoboyId" = :requesterId'
-                  : userForRequest.type === UserType.SHOPKEEPER ||
-                      userForRequest.type === UserType.SHOPKEEPERADMIN
-                    ? 'AND delivery."establishmentId" = :requesterId'
-                    : ''
-              }
-          )`,
-          'totalEntregas',
-        )
-        .setParameters({
-          pendingStatus: StatusDelivery.PENDING,
-          waitingReleaseStatus: StatusDelivery.AWAITING_RELEASE,
-          finishedStatus: StatusDelivery.FINISHED,
-          terminalStatuses: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
-          startAt: dateRange.start,
-          endAt: dateRange.end,
-          requesterId: userForRequest.id,
-        })
-        .where('delivery."isActive" = true');
+      const [pending, assigned, waitingRelease, totalEntregas, city] =
+        await Promise.all([
+          this.deliveryRepository.count(pendingWhere),
+          this.deliveryRepository.count(assignedWhere),
+          this.deliveryRepository.count(waitingReleaseWhere),
+          this.deliveryRepository.count(adminFinancialWhere),
+          countQueryParams.cityId
+            ? this.findCityEntityById(countQueryParams.cityId)
+            : Promise.resolve(null),
+        ]);
 
-      if (cityId) {
-        qb.andWhere('delivery."establishmentCityId" = :dashboardCityId', {
-          dashboardCityId: cityId,
-        });
-      }
-
-      const raw = await qb.getRawOne<{
-        pending: string;
-        assigned: string;
-        waitingRelease: string;
-        totalEntregas: string;
-      }>();
-
-      // Faz a leitura da cidade somente depois da agregação, usando no máximo
-      // uma conexão por vez para não pressionar o pool.
-      const city = cityId ? await this.findCityEntityById(cityId) : null;
-
-      const pending = Number(raw?.pending) || 0;
-      const assigned = Number(raw?.assigned) || 0;
-      const waitingRelease = Number(raw?.waitingRelease) || 0;
-      const totalEntregas = Number(raw?.totalEntregas) || 0;
       const valorAdminPorEntrega = this.getAdminDeliveryFeeValue(city);
 
       return {
@@ -986,7 +1100,7 @@ export class DeliveryService implements OnModuleInit {
         totalEntregas,
         valorAdminPorEntrega,
         totalValorAdmin: totalEntregas * valorAdminPorEntrega,
-        cityId: city?.id ?? cityId ?? null,
+        cityId: city?.id?.toHexString?.() ?? countQueryParams.cityId ?? null,
         cityName: city?.name ?? null,
         createdIn: dateRange.createdIn,
         createdUntil: dateRange.createdUntil,
@@ -995,30 +1109,16 @@ export class DeliveryService implements OnModuleInit {
       };
     } catch (error: any) {
       this.logger.error(
-        `delivery_counts_error userType=${userForRequest.type} cityId=${
-          cityId || 'N/A'
-        } createdIn=${dateRange.createdIn} createdUntil=${
-          dateRange.createdUntil
-        } message=${error?.message || error}`,
+        `delivery_counts_error userId=${userForRequest.id} userType=${userForRequest.type} cityId=${
+          countQueryParams.cityId || 'N/A'
+        } createdIn=${dateRange.createdIn} createdUntil=${dateRange.createdUntil} message=${
+          error?.message || error
+        }`,
         error?.stack,
       );
-
-      // O contador é informação secundária. Em caso de pressão temporária no
-      // banco, não derrubar o dashboard inteiro com HTTP 500.
-      return {
-        pending: 0,
-        assigned: 0,
-        waitingRelease: 0,
-        totalEntregas: 0,
-        valorAdminPorEntrega: 0,
-        totalValorAdmin: 0,
-        cityId: cityId ?? null,
-        cityName: null,
-        createdIn: dateRange.createdIn,
-        createdUntil: dateRange.createdUntil,
-        weekStartsOn: 'TUESDAY',
-        weekEndsOn: 'MONDAY',
-      };
+      throw new BadRequestException(
+        'Não foi possível carregar o contador de entregas.',
+      );
     }
   }
 
@@ -1042,38 +1142,10 @@ export class DeliveryService implements OnModuleInit {
   }
 
   private buildDashboardDateWhere(
-    status: StatusDelivery,
+    _status: StatusDelivery,
     dateRange: DashboardDateRange,
   ) {
-    if (status !== StatusDelivery.FINISHED) {
-      return { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
-    }
-
-    const missingFinishedAt = {
-      $or: [{ finishedAt: null }, { finishedAt: { $exists: false } }],
-    };
-    const missingUpdatedAt = {
-      $or: [{ updatedAt: null }, { updatedAt: { $exists: false } }],
-    };
-
-    return {
-      $or: [
-        { finishedAt: { $gte: dateRange.start, $lte: dateRange.end } },
-        {
-          $and: [
-            missingFinishedAt,
-            { updatedAt: { $gte: dateRange.start, $lte: dateRange.end } },
-          ],
-        },
-        {
-          $and: [
-            missingFinishedAt,
-            missingUpdatedAt,
-            { createdAt: { $gte: dateRange.start, $lte: dateRange.end } },
-          ],
-        },
-      ],
-    };
+    return { createdAt: { $gte: dateRange.start, $lte: dateRange.end } };
   }
 
   private getCurrentRappidexWeekYmdRange(referenceDate = new Date()) {
@@ -1119,7 +1191,7 @@ export class DeliveryService implements OnModuleInit {
   ) {
     const where: Record<string, any> = {
       isActive: true,
-      motoboyId: { $ne: null },
+      motoboy: { $ne: null },
       status: {
         $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
       },
@@ -1170,12 +1242,12 @@ export class DeliveryService implements OnModuleInit {
   }
 
   private async findCityEntityById(cityId: string) {
-    if (!cityId) {
+    if (!cityId || !ObjectId.isValid(cityId)) {
       return null;
     }
 
     return this.cityRepository.findOne({
-      where: { id: cityId },
+      where: { _id: new ObjectId(cityId) },
     });
   }
 
@@ -1487,8 +1559,17 @@ export class DeliveryService implements OnModuleInit {
     );
 
     if (
+      deliveryUpdated.source === 'MENU_FLOW' ||
+      Boolean(deliveryUpdated.menuFlowOrderId)
+    ) {
+      this.menuFlowStatusSync?.queueDelivery(deliveryUpdated.id);
+    }
+
+    if (
       deliveryData.status === StatusDelivery.CANCELED &&
-      deliveryFinded.status !== StatusDelivery.CANCELED
+      deliveryFinded.status !== StatusDelivery.CANCELED &&
+      deliveryFinded.source !== 'MENU_FLOW' &&
+      !deliveryFinded.menuFlowOrderId
     ) {
       const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
         deliveryFinded.id,
@@ -1531,50 +1612,6 @@ export class DeliveryService implements OnModuleInit {
     return DeliveryResult.fromEntity(deliveryUpdated);
   }
 
-  private toDeliveryEstablishmentSnapshot(user: any) {
-    if (!user) return null;
-
-    return {
-      id: user.id,
-      name: user.name,
-      phone: user.phone,
-      profileImage: user.profileImage ?? null,
-      location: user.location ?? null,
-      pix: user.pix ?? null,
-      cityId: user.cityId ?? null,
-      cityName: user.cityName ?? null,
-      notification: user.notification?.subscriptionId
-        ? { subscriptionId: user.notification.subscriptionId }
-        : null,
-      usesExternalIfoodPdv: Boolean(user.usesExternalIfoodPdv),
-      ifoodMerchants: Array.isArray(user.ifoodMerchants)
-        ? user.ifoodMerchants.map((merchant: any) => ({
-            merchantId: String(merchant?.merchantId || '').trim(),
-            name: String(merchant?.name || '').trim(),
-            enabled: merchant?.enabled !== false,
-            pickupAddress:
-              String(merchant?.pickupAddress || '').trim() || undefined,
-          }))
-        : [],
-    } as any;
-  }
-
-  private toDeliveryMotoboySnapshot(user: any) {
-    if (!user) return null;
-
-    return {
-      id: user.id,
-      name: user.name,
-      phone: user.phone,
-      cityId: user.cityId ?? null,
-      type: user.type ?? UserType.MOTOBOY,
-      profileImage: user.profileImage ?? null,
-      notification: user.notification?.subscriptionId
-        ? { subscriptionId: user.notification.subscriptionId }
-        : null,
-    } as any;
-  }
-
   private normalizeMotoboyId(motoboyId?: string | null) {
     if (motoboyId === undefined || motoboyId === null) {
       return null;
@@ -1603,7 +1640,11 @@ export class DeliveryService implements OnModuleInit {
   async createDelivery(
     deliveryData: CreateDeliveryDto,
     user: UserRequest,
-    options?: { skipCreditConsumption?: boolean; creditOrderId?: string },
+    options?: {
+      skipCreditConsumption?: boolean;
+      creditOrderId?: string;
+      menuFlow?: MenuFlowDeliveryMetadata;
+    },
   ): Promise<DeliveryResult> {
     const userFinded = await this.findOneUserById(user.id);
     let establishment;
@@ -1693,11 +1734,8 @@ export class DeliveryService implements OnModuleInit {
         clientName,
         clientPhone,
         status: deliveryStatus,
-        establishment: this.toDeliveryEstablishmentSnapshot(establishment),
-        motoboy: this.toDeliveryMotoboySnapshot(motoboy),
-        establishmentId: establishment.id,
-        establishmentCityId: establishment.cityId,
-        motoboyId: motoboy?.id ?? null,
+        establishment,
+        motoboy,
         value,
         payment,
         soda,
@@ -1719,6 +1757,25 @@ export class DeliveryService implements OnModuleInit {
         ifoodMerchantId,
         ifoodMerchantName,
         ifoodImportedAt: ifoodOrderId ? addHours(new Date(), -3) : undefined,
+        source: options?.menuFlow ? 'MENU_FLOW' : undefined,
+        menuFlowOrderId: options?.menuFlow?.orderId,
+        menuFlowOrderNumber: options?.menuFlow?.orderNumber,
+        menuFlowCompanyId: options?.menuFlow?.companyId,
+        menuFlowRestaurantName: options?.menuFlow?.restaurantName,
+        menuFlowSubtotalCents: options?.menuFlow?.subtotalCents,
+        menuFlowDeliveryFeeCents: options?.menuFlow?.deliveryFeeCents,
+        menuFlowServiceFeeCents: options?.menuFlow?.serviceFeeCents,
+        menuFlowDiscountCents: options?.menuFlow?.discountCents,
+        menuFlowTotalCents: options?.menuFlow?.totalCents,
+        menuFlowPaymentMethod: options?.menuFlow?.paymentMethod,
+        menuFlowNeedsChange: options?.menuFlow?.needsChange,
+        menuFlowChangeForCents: options?.menuFlow?.changeForCents,
+        menuFlowExpectedChangeCents: options?.menuFlow?.expectedChangeCents,
+        menuFlowItems: options?.menuFlow?.items,
+        menuFlowImportedAt: options?.menuFlow
+          ? addHours(new Date(), -3)
+          : undefined,
+        menuFlowSyncPending: Boolean(options?.menuFlow),
         isActive: true,
         createdBy: user.id,
         onCoursedAt,
@@ -1730,6 +1787,9 @@ export class DeliveryService implements OnModuleInit {
         DeliveryResult.fromEntity(newDelivery),
         newDelivery.establishment?.cityId,
       );
+      if (options?.menuFlow) {
+        this.menuFlowStatusSync?.queueDelivery(newDelivery.id);
+      }
       this.logger.log(
         `delivery_created id=${newDelivery.id} status=${newDelivery.status} cityId=${newDelivery.establishment?.cityId} cityName=${newDelivery.establishment?.cityName ?? ''} createdBy=${newDelivery.createdBy}`,
       );
@@ -1870,9 +1930,12 @@ export class DeliveryService implements OnModuleInit {
 
     this.ensureShopkeeperCanCancelDelivery(userFinded, deliveryFinded);
 
-    const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
-      deliveryFinded.id,
-    );
+    const isMenuFlowDelivery =
+      deliveryFinded.source === 'MENU_FLOW' ||
+      Boolean(deliveryFinded.menuFlowOrderId);
+    const ifoodLink = isMenuFlowDelivery
+      ? null
+      : await this.ifoodOrderLinkService.findByDeliveryId(deliveryFinded.id);
 
     if (ifoodLink) {
       const cancellationResult =
@@ -1894,18 +1957,27 @@ export class DeliveryService implements OnModuleInit {
     }
 
     try {
-      await this.deliveryRepository.save({
+      const cancelledDelivery = await this.deliveryRepository.save({
         ...deliveryFinded,
         status: StatusDelivery.CANCELED,
         isActive: false,
         updatedAt: addHours(new Date(), -3),
       });
 
-      await this.refundCreditForCanceledDelivery(
-        deliveryFinded,
-        'Crédito estornado por exclusão da entrega.',
-        ifoodLink?.ifoodOrderId,
-      );
+      if (
+        cancelledDelivery.source === 'MENU_FLOW' ||
+        Boolean(cancelledDelivery.menuFlowOrderId)
+      ) {
+        this.menuFlowStatusSync?.queueDelivery(cancelledDelivery.id);
+      }
+
+      if (!isMenuFlowDelivery) {
+        await this.refundCreditForCanceledDelivery(
+          deliveryFinded,
+          'Crédito estornado por exclusão da entrega.',
+          ifoodLink?.ifoodOrderId,
+        );
+      }
 
       this.ordersGateway.emitDeliveryDeleted(
         deliveryFinded.id,
@@ -2160,6 +2232,9 @@ export class DeliveryService implements OnModuleInit {
       DeliveryResult.fromEntity(updated),
       updated.establishment?.cityId,
     );
+    if (updated.source === 'MENU_FLOW' || Boolean(updated.menuFlowOrderId)) {
+      this.menuFlowStatusSync?.queueDelivery(updated.id);
+    }
     return DeliveryResult.fromEntity(updated);
   }
 
@@ -2178,9 +2253,12 @@ export class DeliveryService implements OnModuleInit {
     ).trim();
     if (!externalCode) return;
 
+    const logisticsFlags = this.mapIfoodLogisticsEventToSyncFlags(externalCode);
+
     const updated = await this.deliveryRepository.save(
       this.buildPersistableDelivery({
         ...delivery,
+        ...logisticsFlags,
         ifoodStatus: externalCode,
         externalStatus: externalCode,
         logisticsStatus: externalCode,
@@ -2192,6 +2270,24 @@ export class DeliveryService implements OnModuleInit {
       DeliveryResult.fromEntity(updated),
       updated.establishment?.cityId,
     );
+  }
+
+  private mapIfoodLogisticsEventToSyncFlags(code: string) {
+    const normalized = String(code || '')
+      .trim()
+      .toUpperCase();
+    const map: Record<string, Partial<DeliveryEntity>> = {
+      ASSIGN_DRIVER: { ifoodAssignDriverSynced: true },
+      ASSIGNED_DRIVER: { ifoodAssignDriverSynced: true },
+      DRIVER_ASSIGNED: { ifoodAssignDriverSynced: true },
+      GOING_TO_ORIGIN: { ifoodGoingToOriginSynced: true },
+      ARRIVED_AT_ORIGIN: { ifoodArrivedAtOriginSynced: true },
+      DISPATCH: { ifoodDispatchSynced: true },
+      DISPATCHED: { ifoodDispatchSynced: true },
+      ARRIVED_AT_DESTINATION: { ifoodArrivedAtDestinationSynced: true },
+    };
+
+    return map[normalized] || {};
   }
 
   async changeConfigs(configs: ConfigsDto) {
@@ -2276,15 +2372,8 @@ export class DeliveryService implements OnModuleInit {
       addressLongitude: data.addressLongitude ?? null,
       addressMapsUrl: data.addressMapsUrl ?? null,
       status: data.status,
-      establishment: this.toDeliveryEstablishmentSnapshot(data.establishment),
-      motoboy: this.toDeliveryMotoboySnapshot(data.motoboy),
-      establishmentId: data.establishment?.id ?? data.establishmentId ?? null,
-      establishmentCityId:
-        data.establishment?.cityId ?? data.establishmentCityId ?? null,
-      motoboyId:
-        data.motoboy === null
-          ? null
-          : (data.motoboy?.id ?? data.motoboyId ?? null),
+      establishment: data.establishment ?? null,
+      motoboy: data.motoboy ?? null,
       value: data.value,
       observation: data.observation,
       destinationObservation: data.destinationObservation ?? null,
@@ -2303,11 +2392,6 @@ export class DeliveryService implements OnModuleInit {
       ifoodStatus: data.ifoodStatus ?? null,
       externalStatus: data.externalStatus ?? null,
       logisticsStatus: data.logisticsStatus ?? null,
-      ifoodOrderId: data.ifoodOrderId ?? null,
-      ifoodDisplayId: data.ifoodDisplayId ?? null,
-      orderLocator: data.orderLocator ?? null,
-      ifoodMerchantId: data.ifoodMerchantId ?? null,
-      ifoodMerchantName: data.ifoodMerchantName ?? null,
       ifoodImportedAt: data.ifoodImportedAt ?? null,
       ifoodLastEventCode: data.ifoodLastEventCode ?? null,
       ifoodLastEventFullCode: data.ifoodLastEventFullCode ?? null,
@@ -2409,7 +2493,6 @@ export class DeliveryService implements OnModuleInit {
         $set: {
           status: StatusDelivery.PENDING,
           motoboy: null,
-          motoboyId: null,
           onCoursedAt: null,
           ifoodAssignDriverSynced: false,
           ifoodGoingToOriginSynced: false,
@@ -2455,7 +2538,7 @@ export class DeliveryService implements OnModuleInit {
         id: deliveryFinded.id,
         isActive: true,
         status: StatusDelivery.PENDING,
-        motoboyId: null,
+        $or: [{ motoboy: null }, { motoboy: { $exists: false } }],
       } as any,
       {
         $set: claimPayload,
@@ -2586,19 +2669,6 @@ export class DeliveryService implements OnModuleInit {
     return parsedDate;
   }
 
-  private shouldUseFinishedDateFilter(
-    queryParams: ListDeliveriesQueryDTO,
-  ): boolean {
-    const selectedStatuses = queryParams.status
-      ? queryParams.status.split(',')
-      : [];
-
-    return (
-      selectedStatuses.length > 0 &&
-      selectedStatuses.every((status) => status === StatusDelivery.FINISHED)
-    );
-  }
-
   private buildReportDateRange(queryParams: ListDeliveriesQueryDTO) {
     if (!queryParams.createdIn && !queryParams.createdUntil) {
       return null;
@@ -2639,27 +2709,7 @@ export class DeliveryService implements OnModuleInit {
       dateRange.end,
     );
 
-    if (!this.shouldUseFinishedDateFilter(queryParams)) {
-      where.createdAt = rangeFilter;
-      return;
-    }
-
-    where.$or = [
-      { finishedAt: rangeFilter },
-      {
-        $and: [
-          { $or: [{ finishedAt: null }, { finishedAt: { $exists: false } }] },
-          { updatedAt: rangeFilter },
-        ],
-      },
-      {
-        $and: [
-          { $or: [{ finishedAt: null }, { finishedAt: { $exists: false } }] },
-          { $or: [{ updatedAt: null }, { updatedAt: { $exists: false } }] },
-          { createdAt: rangeFilter },
-        ],
-      },
-    ];
+    where.createdAt = rangeFilter;
   }
 
   private normalizeReportDateToYmd(
@@ -2690,19 +2740,7 @@ export class DeliveryService implements OnModuleInit {
     delivery: DeliveryEntity,
     queryParams: ListDeliveriesQueryDTO,
   ): boolean {
-    const selectedStatuses = queryParams.status
-      ? queryParams.status.split(',')
-      : [];
-
-    const shouldUseFinishedAt =
-      selectedStatuses.length > 0 &&
-      selectedStatuses.every((status) => status === StatusDelivery.FINISHED);
-
-    const dateValue = shouldUseFinishedAt
-      ? delivery.finishedAt || delivery.updatedAt || delivery.createdAt
-      : delivery.createdAt;
-
-    const deliveryDate = this.normalizeReportDateToYmd(dateValue);
+    const deliveryDate = this.normalizeReportDateToYmd(delivery.createdAt);
 
     if (!deliveryDate) return false;
 

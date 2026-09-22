@@ -16,6 +16,9 @@ export class UserResult {
   phone: string;
 
   @Expose()
+  managerWhatsapp?: string;
+
+  @Expose()
   user: string;
 
   @Expose()
@@ -88,6 +91,12 @@ export class UserResult {
   @Expose()
   ifoodOrdersAvailable: number;
 
+  @Expose()
+  menuFlowEnabled: boolean;
+
+  @Expose()
+  menuFlowCompanyId?: string;
+
   public static fromEntity(user: UserEntity) {
     return plainToClass<UserResult, UserResult>(UserResult, {
       ...user,
@@ -95,6 +104,7 @@ export class UserResult {
       ifoodWithoutPreparationTime: Boolean(user?.ifoodWithoutPreparationTime),
       blocked: Boolean(user?.blocked),
       blockedBySystem: Boolean(user?.blockedBySystem),
+      menuFlowEnabled: Boolean(user?.menuFlowEnabled),
     } as UserResult, {
       excludeExtraneousValues: true,
     });

@@ -8,15 +8,24 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MongoRepository } from 'typeorm';
 import { DeliveryEntity } from '../database/entities';
+import { StatusDelivery } from '../shared/constants/enums.constants';
+
+const MENU_FLOW_STATUS_LABELS: Record<StatusDelivery, string> = {
+  [StatusDelivery.AWAITING_RELEASE]: 'Aguardando liberação',
+  [StatusDelivery.PENDING]: 'Aguardando motoboy',
+  [StatusDelivery.ONCOURSE]: 'Motoboy indo até o estabelecimento',
+  [StatusDelivery.ARRIVED_AT_STORE]: 'Motoboy chegou ao estabelecimento',
+  [StatusDelivery.COLLECTED]: 'Motoboy a caminho do cliente',
+  [StatusDelivery.ARRIVED_AT_DESTINATION]: 'Motoboy chegou ao destino',
+  [StatusDelivery.AWAITING_CODE]: 'Aguardando código de entrega',
+  [StatusDelivery.FINISHED]: 'Entrega concluída',
+  [StatusDelivery.CANCELED]: 'Entrega cancelada',
+};
 
 @Injectable()
-export class MenuFlowStatusSyncService
-  implements OnModuleInit, OnModuleDestroy
-{
+export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MenuFlowStatusSyncService.name);
   private retryTimer?: NodeJS.Timeout;
-  private retryRunning = false;
-  private syncQueue: Promise<void> = Promise.resolve();
 
   constructor(
     @InjectRepository(DeliveryEntity)
@@ -35,19 +44,11 @@ export class MenuFlowStatusSyncService
   }
 
   queueDelivery(deliveryId: string) {
-    void this.enqueueSync(() => this.markPendingAndSync(deliveryId)).catch(
-      (error) => {
-        this.logger.warn(
-          `Rappidex -> Menu Flow falhou deliveryId=${deliveryId}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      },
-    );
-  }
-
-  private enqueueSync(operation: () => Promise<void>): Promise<void> {
-    const queued = this.syncQueue.then(operation);
-    this.syncQueue = queued.catch(() => undefined);
-    return queued;
+    void this.markPendingAndSync(deliveryId).catch((error) => {
+      this.logger.warn(
+        `Rappidex -> Menu Flow falhou deliveryId=${deliveryId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
   }
 
   private async markPendingAndSync(deliveryId: string) {
@@ -78,6 +79,8 @@ export class MenuFlowStatusSyncService
 
     const updatedAt = delivery.updatedAt || new Date();
     const eventId = `${delivery.id}:${delivery.status}:${new Date(updatedAt).getTime()}`;
+    const statusLabel =
+      MENU_FLOW_STATUS_LABELS[delivery.status] || String(delivery.status);
 
     try {
       await this.request('/integrations/rappidex/status', {
@@ -86,6 +89,7 @@ export class MenuFlowStatusSyncService
           orderId: delivery.menuFlowOrderId,
           deliveryId: delivery.id,
           status: delivery.status,
+          statusLabel,
           eventId,
           updatedAt: new Date(updatedAt).toISOString(),
           motoboyName: delivery.motoboy?.name || undefined,
@@ -106,7 +110,7 @@ export class MenuFlowStatusSyncService
       );
 
       this.logger.log(
-        `Rappidex -> Menu Flow deliveryId=${delivery.id} orderId=${delivery.menuFlowOrderId} status=${delivery.status}`,
+        `Rappidex -> Menu Flow deliveryId=${delivery.id} orderId=${delivery.menuFlowOrderId} status=${delivery.status} label="${statusLabel}"`,
       );
     } catch (error) {
       await this.deliveries.updateOne(
@@ -114,10 +118,7 @@ export class MenuFlowStatusSyncService
         {
           $set: {
             menuFlowSyncPending: true,
-            menuFlowSyncError: (error instanceof Error
-              ? error.message
-              : String(error)
-            ).slice(0, 1000),
+            menuFlowSyncError: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
           },
         } as any,
       );
@@ -126,11 +127,6 @@ export class MenuFlowStatusSyncService
   }
 
   private async retryPending() {
-    if (this.retryRunning) {
-      this.logger.warn('Fila Menu Flow: ciclo anterior ainda em execução.');
-      return;
-    }
-    this.retryRunning = true;
     try {
       const pending = await this.deliveries.find({
         where: {
@@ -139,23 +135,13 @@ export class MenuFlowStatusSyncService
         } as any,
         take: 25,
       });
-      // Sequencial por intenção: com pool de 5, o retry nunca deve tomar todas
-      // as conexões das requisições HTTP.
-      for (const delivery of pending) {
-        try {
-          await this.enqueueSync(() => this.syncDelivery(delivery.id));
-        } catch (error) {
-          this.logger.warn(
-            `Fila Menu Flow deliveryId=${delivery.id}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
+      await Promise.allSettled(
+        pending.map((delivery) => this.syncDelivery(delivery.id)),
+      );
     } catch (error) {
       this.logger.warn(
         `Fila de status Menu Flow: ${error instanceof Error ? error.message : String(error)}`,
       );
-    } finally {
-      this.retryRunning = false;
     }
   }
 

@@ -51,7 +51,6 @@ describe('DeliveryService', () => {
             deleteOne: jest.fn(),
             updateOne: jest.fn(),
             count: jest.fn(),
-            createQueryBuilder: jest.fn(),
           },
         },
         {
@@ -78,12 +77,42 @@ describe('DeliveryService', () => {
         {
           provide: IfoodOrdersService,
           useValue: {
-            assignDriver: jest.fn(),
-            notifyGoingToOrigin: jest.fn(),
-            notifyArrivedAtOrigin: jest.fn(),
-            dispatchLogisticsOrder: jest.fn(),
+            assignDriver: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
+            notifyGoingToOrigin: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
+            notifyArrivedAtOrigin: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
+            dispatchLogisticsOrder: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
             dispatchOrder: jest.fn(),
-            notifyArrivedAtDestination: jest.fn(),
+            notifyArrivedAtDestination: jest
+              .fn()
+              .mockResolvedValue({
+                accepted: true,
+                success: true,
+                httpStatus: 202,
+              }),
             verifyDeliveryCode: jest.fn().mockResolvedValue({ success: true }),
             requestCancellation: jest.fn(),
             getOrderDetails: jest
@@ -126,47 +155,6 @@ describe('DeliveryService', () => {
     expect(service).toBeDefined();
   });
 
-  it('includeTotal=false não executa count()', async () => {
-    userRepository.findOneBy.mockResolvedValue({
-      id: 'admin-1',
-      type: UserType.ADMIN,
-      cityId: 'city-1',
-    });
-    deliveryRepository.find.mockResolvedValue([]);
-
-    await service.listDeliveries(
-      { id: 'admin-1', type: UserType.ADMIN } as any,
-      { page: 1, itemsPerPage: 20, includeTotal: false } as any,
-    );
-
-    expect(deliveryRepository.count).not.toHaveBeenCalled();
-  });
-
-  it('falha no contador retorna fallback em vez de propagar HTTP 500', async () => {
-    userRepository.findOneBy.mockResolvedValue({
-      id: 'admin-1',
-      type: UserType.ADMIN,
-      cityId: 'city-1',
-    });
-    deliveryRepository.createQueryBuilder.mockImplementation(() => {
-      throw Object.assign(new Error('pool timeout'), { code: '53300' });
-    });
-
-    await expect(
-      service.getDashboardCounts(
-        { id: 'admin-1', type: UserType.ADMIN } as any,
-        {} as any,
-      ),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        pending: 0,
-        assigned: 0,
-        waitingRelease: 0,
-        totalEntregas: 0,
-      }),
-    );
-  });
-
   it('deve executar sequência logística no status ONCOURSE', async () => {
     ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
       ifoodOrderId: 'ifood-1',
@@ -195,6 +183,59 @@ describe('DeliveryService', () => {
     );
   });
 
+  it('não chama goingToOrigin quando assignDriver falha', async () => {
+    ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+      ifoodOrderId: 'ifood-fail',
+      merchantId: 'merchant-fail',
+    });
+    ifoodOrdersService.assignDriver.mockRejectedValueOnce(
+      Object.assign(new Error('422 workerPhone invalid'), {
+        response: { status: 422, data: { code: 'INVALID_PHONE' } },
+      }),
+    );
+
+    const result = await (service as any).syncIfoodIfNeeded(
+      {
+        id: 'delivery-fail',
+        status: StatusDelivery.PENDING,
+        ifoodAssignDriverSynced: false,
+        ifoodGoingToOriginSynced: false,
+      },
+      { motoboy: { id: 'm1', name: 'João', phone: '11999999999' } },
+      { status: StatusDelivery.ONCOURSE },
+    );
+
+    expect(result).toEqual({});
+    expect(ifoodOrdersService.assignDriver).toHaveBeenCalled();
+    expect(ifoodOrdersService.notifyGoingToOrigin).not.toHaveBeenCalled();
+  });
+
+  it('não marca flags quando o iFood não retorna accepted', async () => {
+    ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+      ifoodOrderId: 'ifood-not-accepted',
+      merchantId: 'merchant-not-accepted',
+    });
+    ifoodOrdersService.assignDriver.mockResolvedValueOnce({
+      accepted: false,
+      success: true,
+      httpStatus: 200,
+    });
+
+    const result = await (service as any).syncIfoodIfNeeded(
+      {
+        id: 'delivery-not-accepted',
+        status: StatusDelivery.PENDING,
+        ifoodAssignDriverSynced: false,
+        ifoodGoingToOriginSynced: false,
+      },
+      { motoboy: { id: 'm1', name: 'João', phone: '11999999999' } },
+      { status: StatusDelivery.ONCOURSE },
+    );
+
+    expect(result).toEqual({});
+    expect(ifoodOrdersService.notifyGoingToOrigin).not.toHaveBeenCalled();
+  });
+
   it('não deve sincronizar ACAMINHO sem motoboy em pedido iFood', async () => {
     ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
       ifoodOrderId: 'ifood-10',
@@ -217,7 +258,7 @@ describe('DeliveryService', () => {
     expect(ifoodOrdersService.notifyGoingToOrigin).not.toHaveBeenCalled();
   });
 
-  it('deve executar apenas dispatch no status COLLECTED sem chamar arrivedAtOrigin', async () => {
+  it('deve garantir arrivedAtOrigin antes de dispatch no status COLLECTED', async () => {
     ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
       ifoodOrderId: 'ifood-2',
       merchantId: 'merchant-2',
@@ -227,6 +268,8 @@ describe('DeliveryService', () => {
       {
         id: 'delivery-2',
         status: StatusDelivery.ONCOURSE,
+        ifoodAssignDriverSynced: true,
+        ifoodGoingToOriginSynced: true,
         ifoodArrivedAtOriginSynced: false,
         ifoodDispatchSynced: false,
       },
@@ -234,7 +277,10 @@ describe('DeliveryService', () => {
       { status: StatusDelivery.COLLECTED },
     );
 
-    expect(ifoodOrdersService.notifyArrivedAtOrigin).not.toHaveBeenCalled();
+    expect(ifoodOrdersService.notifyArrivedAtOrigin).toHaveBeenCalledWith(
+      'ifood-2',
+      'merchant-2',
+    );
     expect(ifoodOrdersService.dispatchLogisticsOrder).toHaveBeenCalledWith(
       'ifood-2',
       'merchant-2',
@@ -252,6 +298,8 @@ describe('DeliveryService', () => {
       {
         id: 'delivery-8',
         status: StatusDelivery.ONCOURSE,
+        ifoodAssignDriverSynced: true,
+        ifoodGoingToOriginSynced: true,
         ifoodArrivedAtOriginSynced: false,
       },
       {},
@@ -415,7 +463,7 @@ describe('DeliveryService', () => {
     );
   });
 
-  it('aplica o período de finalização no PostgreSQL sem filtro JSONB', () => {
+  it('aplica filtro de relatório sempre por createdAt no where do MongoDB', () => {
     const where = (service as any).buildDeliveriesWhere(
       { type: 'superadmin' },
       {
@@ -425,40 +473,37 @@ describe('DeliveryService', () => {
       },
     );
 
-    expect(where.$or).toHaveLength(3);
-    expect(where.createdAt).toBeUndefined();
+    expect(where.$or).toBeUndefined();
+    expect(where.finishedAt).toBeUndefined();
+    expect(where.updatedAt).toBeUndefined();
+    expect(where.createdAt).toEqual({
+      $gte: new Date('2026-06-23T00:00:00.000Z'),
+      $lte: new Date('2026-06-23T23:59:59.999Z'),
+    });
     expect(where.status).toEqual({ $in: [StatusDelivery.FINISHED] });
-    expect(where['establishment.cityId']).toBeUndefined();
-    expect(where['motoboy.id']).toBeUndefined();
   });
 
-  it('filtra entregas finalizadas em memória pelo dia de finishedAt', () => {
-    const queryParams = {
+  it('filtra entregas finalizadas em memória pelo dia de createdAt', () => {
+    const delivery = {
       status: StatusDelivery.FINISHED,
-      createdIn: '2026-06-23',
-      createdUntil: '2026-06-23',
+      createdAt: new Date('2026-06-22T23:50:00.000Z'),
+      finishedAt: new Date('2026-06-23T00:10:00.000Z'),
     };
 
     expect(
-      (service as any).isDeliveryInsideReportDateFilter(
-        {
-          status: StatusDelivery.FINISHED,
-          createdAt: new Date('2026-06-22T23:30:00.000Z'),
-          finishedAt: new Date('2026-06-23T00:39:00.000Z'),
-        },
-        queryParams,
-      ),
+      (service as any).isDeliveryInsideReportDateFilter(delivery, {
+        status: StatusDelivery.FINISHED,
+        createdIn: '2026-06-22',
+        createdUntil: '2026-06-22',
+      }),
     ).toBe(true);
 
     expect(
-      (service as any).isDeliveryInsideReportDateFilter(
-        {
-          status: StatusDelivery.FINISHED,
-          createdAt: new Date('2026-06-23T10:00:00.000Z'),
-          finishedAt: new Date('2026-06-24T00:39:00.000Z'),
-        },
-        queryParams,
-      ),
+      (service as any).isDeliveryInsideReportDateFilter(delivery, {
+        status: StatusDelivery.FINISHED,
+        createdIn: '2026-06-23',
+        createdUntil: '2026-06-23',
+      }),
     ).toBe(false);
   });
 
