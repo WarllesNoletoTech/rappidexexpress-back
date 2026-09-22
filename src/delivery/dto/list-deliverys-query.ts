@@ -40,6 +40,11 @@ export class ListDeliveriesQueryDTO {
   @IsOptional()
   includeDashboardCounts?: boolean | string;
 
+  // Compatibilidade com o frontend atual. No runtime Mongo este parâmetro
+  // pode ser ignorado pelo service sem gerar 400 no ValidationPipe.
+  @IsOptional()
+  includeTotal?: boolean | string;
+
   @IsString()
   @IsOptional()
   cityId?: string;
