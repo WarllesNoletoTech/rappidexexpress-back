@@ -30,6 +30,10 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
     return this.repository.metadata;
   }
 
+  createQueryBuilder(alias: string) {
+    return this.repository.createQueryBuilder(alias);
+  }
+
   private nextParam(prefix = 'p') {
     this.parameterIndex += 1;
     return `${prefix}_${this.parameterIndex}`;
@@ -178,7 +182,9 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
             conditions.push('1 = 1');
           } else {
             params[param] = values;
-            conditions.push(`(${column} NOT IN (:...${param}) OR ${column} IS NULL)`);
+            conditions.push(
+              `(${column} NOT IN (:...${param}) OR ${column} IS NULL)`,
+            );
           }
           break;
         }
@@ -247,7 +253,9 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
         const branchSql = branches.map(
           (branch) => `(${this.buildWhereSql(branch, params, alias)})`,
         );
-        andConditions.push(branchSql.length ? `(${branchSql.join(' OR ')})` : '1 = 0');
+        andConditions.push(
+          branchSql.length ? `(${branchSql.join(' OR ')})` : '1 = 0',
+        );
         continue;
       }
 
@@ -256,7 +264,9 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
         const branchSql = branches.map(
           (branch) => `(${this.buildWhereSql(branch, params, alias)})`,
         );
-        andConditions.push(branchSql.length ? `(${branchSql.join(' AND ')})` : '1 = 1');
+        andConditions.push(
+          branchSql.length ? `(${branchSql.join(' AND ')})` : '1 = 1',
+        );
         continue;
       }
 
@@ -284,7 +294,8 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
     let first = true;
     for (const [field, direction] of Object.entries(order)) {
       const property = this.propertyName(field);
-      const column = this.repository.metadata.findColumnWithPropertyName(property);
+      const column =
+        this.repository.metadata.findColumnWithPropertyName(property);
       if (!column) continue;
       const dir = String(direction).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
       const ref = `e.${property}`;
@@ -344,7 +355,8 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
   async count(optionsOrWhere: any = {}): Promise<number> {
     this.resetParams();
     const where =
-      optionsOrWhere && Object.prototype.hasOwnProperty.call(optionsOrWhere, 'where')
+      optionsOrWhere &&
+      Object.prototype.hasOwnProperty.call(optionsOrWhere, 'where')
         ? optionsOrWhere.where
         : optionsOrWhere;
     const qb = this.repository.createQueryBuilder('e');
@@ -441,7 +453,8 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
 
     for (const [field, rawDelta] of Object.entries(update?.$inc || {})) {
       const property = this.propertyName(field);
-      const column = this.repository.metadata.findColumnWithPropertyName(property);
+      const column =
+        this.repository.metadata.findColumnWithPropertyName(property);
       if (!column) {
         throw new Error(`Campo de incremento não mapeado: ${field}`);
       }
@@ -476,6 +489,7 @@ export class PostgresCompatRepository<T extends ObjectLiteral> {
   }
 
   async findOneAndUpdate(filter: any, update: any, _options?: any) {
+    void _options;
     this.resetParams();
     const params: Record<string, any> = {};
     const whereSql = this.buildWhereSql(filter, params);

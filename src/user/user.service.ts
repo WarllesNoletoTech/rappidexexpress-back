@@ -31,7 +31,7 @@ import { IfoodImportService } from '../ifood/ifood-import.service';
 
 type MotoboyDeliverySummary = {
   name: string;
-  lastDeliveryDate: DeliveryEntity[];
+  lastDeliveryDate: Date | string | null;
   id: string;
 };
 
@@ -129,8 +129,12 @@ export class UserService {
       name: 'ASC',
     };
 
-    const skip = (queryParams.page - 1) * queryParams.itemsPerPage;
-    const take = queryParams.itemsPerPage;
+    const page = Math.max(1, Math.floor(Number(queryParams.page) || 1));
+    const take = Math.min(
+      500,
+      Math.max(1, Math.floor(Number(queryParams.itemsPerPage) || 200)),
+    );
+    const skip = (page - 1) * take;
     let where = {};
     where['isActive'] = true;
 
@@ -187,7 +191,7 @@ export class UserService {
       throw error;
     }
 
-    return ListUsersResult.fromEntities(users, users.length, queryParams.page);
+    return ListUsersResult.fromEntities(users, users.length, page);
   }
 
   async updateUser(
@@ -210,14 +214,14 @@ export class UserService {
       const useIfoodIntegration =
         data.useIfoodIntegration ?? userToUpdate.useIfoodIntegration ?? false;
       const usesExternalIfoodPdv = useIfoodIntegration
-        ? (data.usesExternalIfoodPdv ?? userToUpdate.usesExternalIfoodPdv ?? false)
+        ? (data.usesExternalIfoodPdv ??
+          userToUpdate.usesExternalIfoodPdv ??
+          false)
         : false;
       const ifoodWithoutPreparationTime = useIfoodIntegration
-        ? (
-            data.ifoodWithoutPreparationTime ??
-            userToUpdate.ifoodWithoutPreparationTime ??
-            false
-          )
+        ? (data.ifoodWithoutPreparationTime ??
+          userToUpdate.ifoodWithoutPreparationTime ??
+          false)
         : false;
 
       const ifoodMerchantId = useIfoodIntegration
@@ -265,7 +269,9 @@ export class UserService {
           ifoodMerchantId !== String(userToUpdate.ifoodMerchantId || '').trim(),
         ifoodMerchantsChanged:
           JSON.stringify(ifoodMerchants) !==
-          JSON.stringify(this.normalizeIfoodMerchants(userToUpdate.ifoodMerchants)),
+          JSON.stringify(
+            this.normalizeIfoodMerchants(userToUpdate.ifoodMerchants),
+          ),
         isActiveChanged:
           Boolean(changedUser.isActive) !== Boolean(userToUpdate.isActive),
         usesExternalIfoodPdvChanged:
@@ -326,12 +332,20 @@ export class UserService {
       .retryPendingImportsForCompany(company.id)
       .then(() =>
         this.logger.log(
-          `ifood_initial_sync_triggered companyId=${company.id} merchants=${this.getActiveMerchantIds(company).map((merchantId) => this.maskMerchantId(merchantId)).join(',')}`,
+          `ifood_initial_sync_triggered companyId=${company.id} merchants=${this.getActiveMerchantIds(
+            company,
+          )
+            .map((merchantId) => this.maskMerchantId(merchantId))
+            .join(',')}`,
         ),
       )
       .catch((error) =>
         this.logger.error(
-          `ifood_initial_sync_failed companyId=${company.id} merchants=${this.getActiveMerchantIds(company).map((merchantId) => this.maskMerchantId(merchantId)).join(',')} error=${error?.message || error}`,
+          `ifood_initial_sync_failed companyId=${company.id} merchants=${this.getActiveMerchantIds(
+            company,
+          )
+            .map((merchantId) => this.maskMerchantId(merchantId))
+            .join(',')} error=${error?.message || error}`,
         ),
       );
   }
@@ -353,7 +367,8 @@ export class UserService {
         merchantId: String(merchant?.merchantId || '').trim(),
         name: String(merchant?.name || '').trim(),
         enabled: merchant?.enabled !== false,
-        pickupAddress: String(merchant?.pickupAddress || '').trim() || undefined,
+        pickupAddress:
+          String(merchant?.pickupAddress || '').trim() || undefined,
       }))
       .filter((merchant) => merchant.merchantId);
   }
@@ -498,7 +513,7 @@ export class UserService {
   async findMotoboys(
     requestUser: UserRequest,
   ): Promise<Record<string, string>[]> {
-    const requestStartedAt = Date.now();
+    const startedAt = Date.now();
     const requester = await this.findUserOrFail(requestUser.id);
 
     let where;
@@ -537,53 +552,72 @@ export class UserService {
                 motoboy.cityId.toString() === requesterCityId?.toString(),
             );
 
-      const motoboysWithDeliveriesCount = await Promise.all(
-        scopedMotoboys.map(async (motoboy) => {
-          // PostgreSQL: usar as colunas escalares indexadas, evitando filtros
-          // JSONB em motoboy/establishment que faziam varredura no histórico.
-          const countWhere = {
-            isActive: true,
-            motoboyId: motoboy.id,
-            status: {
-              $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
-            },
-          };
+      const motoboyIds = scopedMotoboys.map((motoboy) => motoboy.id);
+      const statsByMotoboyId = new Map<
+        string,
+        { activeCount: number; lastDeliveryDate: string | null }
+      >();
 
-          const lastDeliveryWhere = {
-            motoboyId: motoboy.id,
-            status: StatusDelivery.FINISHED,
-          };
-          if (requesterCityId) {
-            countWhere['establishmentCityId'] = requesterCityId;
-            lastDeliveryWhere['establishmentCityId'] = requesterCityId;
-          }
+      if (motoboyIds.length) {
+        const query = this.deliveryRepository
+          .createQueryBuilder('delivery')
+          .select('delivery.motoboyId', 'motoboyId')
+          .addSelect(
+            `COUNT(*) FILTER (WHERE delivery.isActive = true AND delivery.status NOT IN (:...terminalStatuses))`,
+            'activeCount',
+          )
+          .addSelect(
+            `MAX(delivery.finishedAt) FILTER (WHERE delivery.status = :finishedStatus)`,
+            'lastDeliveryDate',
+          )
+          .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
+          .setParameters({
+            terminalStatuses: [
+              StatusDelivery.FINISHED,
+              StatusDelivery.CANCELED,
+            ],
+            finishedStatus: StatusDelivery.FINISHED,
+          })
+          .groupBy('delivery.motoboyId');
 
-          const [countDeliveries, lastDelivery] = await Promise.all([
-            this.deliveryRepository.count(countWhere),
-            this.deliveryRepository.find({
-              where: lastDeliveryWhere,
-              order: { finishedAt: 'DESC' },
-              take: 1,
-              select: { finishedAt: true },
-            }),
-          ]);
+        if (requesterCityId) {
+          query.andWhere('delivery.establishmentCityId = :requesterCityId', {
+            requesterCityId,
+          });
+        }
 
-          return {
-            name: `${motoboy.name} - ${countDeliveries}`,
-            lastDeliveryDate: lastDelivery,
-            id: motoboy.id,
-          };
-        }),
-      );
+        const stats = await query.getRawMany<{
+          motoboyId: string;
+          activeCount: string;
+          lastDeliveryDate: string | null;
+        }>();
+
+        stats.forEach((stat) => {
+          statsByMotoboyId.set(stat.motoboyId, {
+            activeCount: Number(stat.activeCount) || 0,
+            lastDeliveryDate: stat.lastDeliveryDate,
+          });
+        });
+      }
+
+      const motoboysWithDeliveriesCount = scopedMotoboys.map((motoboy) => {
+        const stats = statsByMotoboyId.get(motoboy.id);
+        return {
+          name: `${motoboy.name} - ${stats?.activeCount || 0}`,
+          lastDeliveryDate: stats?.lastDeliveryDate || null,
+          id: motoboy.id,
+        };
+      });
 
       const result = await this.changeNameForMotoboy(
         motoboysWithDeliveriesCount,
       );
-
-      this.logger.log(
-        `GET /api/user/motoboys performance userId=${requester.id} userType=${requester.type} cityId=${requesterCityId || 'N/A'} motoboys=${scopedMotoboys.length} totalMs=${Date.now() - requestStartedAt}`,
-      );
-
+      const totalMs = Date.now() - startedAt;
+      if (totalMs >= 500) {
+        this.logger.warn(
+          `GET /api/user/motoboys performance userType=${requester.type} returned=${result.length} totalMs=${totalMs}`,
+        );
+      }
       return result;
     } catch (error) {
       throw error;
@@ -596,8 +630,8 @@ export class UserService {
     const newArrayForMotoboys: Record<string, string>[] = [];
     motoboysWithDeliveriesCount.forEach((motoboy) => {
       let hour = 'sem ultima entrega';
-      if (motoboy.lastDeliveryDate[0]) {
-        const finishedAtDate = new Date(motoboy.lastDeliveryDate[0].finishedAt);
+      if (motoboy.lastDeliveryDate) {
+        const finishedAtDate = new Date(motoboy.lastDeliveryDate);
         if (!Number.isNaN(finishedAtDate.getTime())) {
           hour = `${finishedAtDate.toISOString().substring(11, 16)} horas`;
         }
@@ -658,7 +692,6 @@ export class UserService {
       throw error;
     }
   }
-
 
   async unblockUser(id: string, requestUser: UserRequest) {
     const requester = await this.findUserOrFail(requestUser.id);
