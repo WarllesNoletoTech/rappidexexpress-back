@@ -70,6 +70,14 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Dispara uma reconciliação sob demanda sem depender do próximo intervalo.
+   * O próprio runPollingCycle possui trava contra execução concorrente.
+   */
+  async triggerPollingCycle() {
+    await this.runPollingCycle();
+  }
+
   private async runPollingCycle() {
     if (this.isPollingCycleRunning) {
       this.logger.log(
