@@ -51,6 +51,7 @@ describe('DeliveryService', () => {
             deleteOne: jest.fn(),
             updateOne: jest.fn(),
             count: jest.fn(),
+            createQueryBuilder: jest.fn(),
           },
         },
         {
@@ -123,6 +124,47 @@ describe('DeliveryService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('includeTotal=false não executa count()', async () => {
+    userRepository.findOneBy.mockResolvedValue({
+      id: 'admin-1',
+      type: UserType.ADMIN,
+      cityId: 'city-1',
+    });
+    deliveryRepository.find.mockResolvedValue([]);
+
+    await service.listDeliveries(
+      { id: 'admin-1', type: UserType.ADMIN } as any,
+      { page: 1, itemsPerPage: 20, includeTotal: false } as any,
+    );
+
+    expect(deliveryRepository.count).not.toHaveBeenCalled();
+  });
+
+  it('falha no contador retorna fallback em vez de propagar HTTP 500', async () => {
+    userRepository.findOneBy.mockResolvedValue({
+      id: 'admin-1',
+      type: UserType.ADMIN,
+      cityId: 'city-1',
+    });
+    deliveryRepository.createQueryBuilder.mockImplementation(() => {
+      throw Object.assign(new Error('pool timeout'), { code: '53300' });
+    });
+
+    await expect(
+      service.getDashboardCounts(
+        { id: 'admin-1', type: UserType.ADMIN } as any,
+        {} as any,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        pending: 0,
+        assigned: 0,
+        waitingRelease: 0,
+        totalEntregas: 0,
+      }),
+    );
   });
 
   it('deve executar sequência logística no status ONCOURSE', async () => {
@@ -373,7 +415,7 @@ describe('DeliveryService', () => {
     );
   });
 
-  it('não aplica filtro de data diretamente no where do MongoDB', () => {
+  it('aplica o período de finalização no PostgreSQL sem filtro JSONB', () => {
     const where = (service as any).buildDeliveriesWhere(
       { type: 'superadmin' },
       {
@@ -383,10 +425,11 @@ describe('DeliveryService', () => {
       },
     );
 
-    expect(where.$or).toBeUndefined();
-    expect(where.finishedAt).toBeUndefined();
+    expect(where.$or).toHaveLength(3);
     expect(where.createdAt).toBeUndefined();
     expect(where.status).toEqual({ $in: [StatusDelivery.FINISHED] });
+    expect(where['establishment.cityId']).toBeUndefined();
+    expect(where['motoboy.id']).toBeUndefined();
   });
 
   it('filtra entregas finalizadas em memória pelo dia de finishedAt', () => {

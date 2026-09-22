@@ -29,9 +29,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     if (currentUser.blocked) {
-      throw new ForbiddenException('Usuário bloqueado. Procure o administrador.');
+      throw new ForbiddenException(
+        'Usuário bloqueado. Procure o administrador.',
+      );
     }
 
-    return { id, user, type, phone, permission, cityId };
+    // A autorização já fez uma leitura da linha atual. Use os atributos atuais
+    // do banco (e não os possivelmente antigos do token) nas regras de cidade.
+    return {
+      id: currentUser.id || id,
+      user: currentUser.user || user,
+      type: currentUser.type || type,
+      phone: currentUser.phone || phone,
+      permission: currentUser.permission || permission,
+      cityId: currentUser.cityId || cityId,
+    };
   }
 }

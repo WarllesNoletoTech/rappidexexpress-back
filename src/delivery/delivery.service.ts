@@ -800,24 +800,22 @@ export class DeliveryService implements OnModuleInit {
       queryParams.includeTotal === undefined ||
       this.parseBooleanQuery(queryParams.includeTotal);
 
-    const dashboardCountsPromise = shouldIncludeDashboardCounts
-      ? this.getDashboardCountsByUser(userForRequest, queryParams)
-      : Promise.resolve(undefined);
-
     const queryStartedAt = Date.now();
-    const [deliveries, count, dashboardCounts] = await Promise.all([
-      this.deliveryRepository.find({
-        relations: { motoboy: true, establishment: true },
-        where,
-        skip,
-        take,
-        order: { [sortField]: 'ASC', createdAt: 'ASC' } as any,
-      }),
-      shouldIncludeTotal
-        ? this.deliveryRepository.count(where)
-        : Promise.resolve(0),
-      dashboardCountsPromise,
-    ]);
+    // Uma abertura do dashboard deve ocupar somente uma conexão por vez. Em
+    // especial, includeTotal=false não agenda COUNT no pool nem em paralelo.
+    const deliveries = await this.deliveryRepository.find({
+      relations: { motoboy: true, establishment: true },
+      where,
+      skip,
+      take,
+      order: { [sortField]: 'DESC', createdAt: 'DESC' } as any,
+    });
+    const count = shouldIncludeTotal
+      ? await this.deliveryRepository.count(where)
+      : deliveries.length;
+    const dashboardCounts = shouldIncludeDashboardCounts
+      ? await this.getDashboardCountsByUser(userForRequest, queryParams)
+      : undefined;
     const queryDurationMs = Date.now() - queryStartedAt;
 
     const ifoodLinks = await this.ifoodOrderLinkService.findByDeliveryIds(
@@ -983,10 +981,11 @@ export class DeliveryService implements OnModuleInit {
           startAt: dateRange.start,
           endAt: dateRange.end,
           requesterId: userForRequest.id,
-        });
+        })
+        .where('delivery."isActive" = true');
 
       if (cityId) {
-        qb.where('delivery."establishmentCityId" = :dashboardCityId', {
+        qb.andWhere('delivery."establishmentCityId" = :dashboardCityId', {
           dashboardCityId: cityId,
         });
       }
@@ -2357,14 +2356,13 @@ export class DeliveryService implements OnModuleInit {
       status: data.status,
       establishment: this.toDeliveryEstablishmentSnapshot(data.establishment),
       motoboy: this.toDeliveryMotoboySnapshot(data.motoboy),
-      establishmentId:
-        data.establishment?.id ?? data.establishmentId ?? null,
+      establishmentId: data.establishment?.id ?? data.establishmentId ?? null,
       establishmentCityId:
         data.establishment?.cityId ?? data.establishmentCityId ?? null,
       motoboyId:
         data.motoboy === null
           ? null
-          : data.motoboy?.id ?? data.motoboyId ?? null,
+          : (data.motoboy?.id ?? data.motoboyId ?? null),
       value: data.value,
       observation: data.observation,
       destinationObservation: data.destinationObservation ?? null,

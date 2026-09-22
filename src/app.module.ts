@@ -11,6 +11,8 @@ import { IfoodModule } from './ifood/ifood.module';
 import { FinancialSettlementModule } from './financial-settlement/financial-settlement.module';
 import { SecurityController } from './security.controller';
 import { SecurityService } from './security.service';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { PostgresPoolInterceptor } from './database/postgres-pool.interceptor';
 
 @Module({
   imports: [
@@ -26,6 +28,10 @@ import { SecurityService } from './security.service';
     FinancialSettlementModule,
   ],
   controllers: [AppController, SecurityController],
-  providers: [AppService, SecurityService],
+  providers: [
+    AppService,
+    SecurityService,
+    { provide: APP_INTERCEPTOR, useClass: PostgresPoolInterceptor },
+  ],
 })
 export class AppModule {}

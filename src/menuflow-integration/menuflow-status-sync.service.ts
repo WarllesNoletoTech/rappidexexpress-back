@@ -23,9 +23,13 @@ const MENU_FLOW_STATUS_LABELS: Record<StatusDelivery, string> = {
 };
 
 @Injectable()
-export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy {
+export class MenuFlowStatusSyncService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(MenuFlowStatusSyncService.name);
   private retryTimer?: NodeJS.Timeout;
+  private retryRunning = false;
+  private syncQueue: Promise<void> = Promise.resolve();
 
   constructor(
     @InjectRepository(DeliveryEntity)
@@ -44,11 +48,19 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
   }
 
   queueDelivery(deliveryId: string) {
-    void this.markPendingAndSync(deliveryId).catch((error) => {
-      this.logger.warn(
-        `Rappidex -> Menu Flow falhou deliveryId=${deliveryId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    void this.enqueueSync(() => this.markPendingAndSync(deliveryId)).catch(
+      (error) => {
+        this.logger.warn(
+          `Rappidex -> Menu Flow falhou deliveryId=${deliveryId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    );
+  }
+
+  private enqueueSync(operation: () => Promise<void>): Promise<void> {
+    const queued = this.syncQueue.then(operation);
+    this.syncQueue = queued.catch(() => undefined);
+    return queued;
   }
 
   private async markPendingAndSync(deliveryId: string) {
@@ -118,7 +130,10 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
         {
           $set: {
             menuFlowSyncPending: true,
-            menuFlowSyncError: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+            menuFlowSyncError: (error instanceof Error
+              ? error.message
+              : String(error)
+            ).slice(0, 1000),
           },
         } as any,
       );
@@ -127,6 +142,11 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async retryPending() {
+    if (this.retryRunning) {
+      this.logger.warn('Fila Menu Flow: ciclo anterior ainda em execução.');
+      return;
+    }
+    this.retryRunning = true;
     try {
       const pending = await this.deliveries.find({
         where: {
@@ -135,13 +155,23 @@ export class MenuFlowStatusSyncService implements OnModuleInit, OnModuleDestroy 
         } as any,
         take: 25,
       });
-      await Promise.allSettled(
-        pending.map((delivery) => this.syncDelivery(delivery.id)),
-      );
+      // Sequencial por intenção: com pool de 5, o retry nunca deve tomar todas
+      // as conexões das requisições HTTP.
+      for (const delivery of pending) {
+        try {
+          await this.enqueueSync(() => this.syncDelivery(delivery.id));
+        } catch (error) {
+          this.logger.warn(
+            `Fila Menu Flow deliveryId=${delivery.id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
     } catch (error) {
       this.logger.warn(
         `Fila de status Menu Flow: ${error instanceof Error ? error.message : String(error)}`,
       );
+    } finally {
+      this.retryRunning = false;
     }
   }
 

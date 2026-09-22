@@ -14,6 +14,7 @@ import {
 } from './entities';
 import { CitySeedService } from './seeds/city-seed.service';
 import { PostgresCompatRepository } from './postgres-compat.repository';
+import { PostgresPoolMonitorService } from './postgres-pool-monitor.service';
 
 const DATABASE_ENTITIES = [
   UserEntity,
@@ -60,9 +61,11 @@ const repositoryProviders: Provider[] = DATABASE_ENTITIES.map((entity) => ({
           url: databaseUrl,
           entities: DATABASE_ENTITIES,
           synchronize:
-            configService.get<string>('TYPEORM_SYNCHRONIZE', 'false') === 'true',
+            configService.get<string>('TYPEORM_SYNCHRONIZE', 'false') ===
+            'true',
           logging:
             configService.get<string>('TYPEORM_LOGGING', 'false') === 'true',
+          maxQueryExecutionTime: 500,
           ssl: sslEnabled ? { rejectUnauthorized: false } : false,
           extra: {
             max: poolMax,
@@ -74,7 +77,11 @@ const repositoryProviders: Provider[] = DATABASE_ENTITIES.map((entity) => ({
       },
     }),
   ],
-  providers: [...repositoryProviders, CitySeedService],
-  exports: [...repositoryProviders],
+  providers: [
+    ...repositoryProviders,
+    CitySeedService,
+    PostgresPoolMonitorService,
+  ],
+  exports: [...repositoryProviders, PostgresPoolMonitorService],
 })
 export class DatabaseModule {}

@@ -15,14 +15,11 @@ async function bootstrap() {
   const app = await NestFactory.create<INestApplication>(AppModule, options);
   const configService = app.get(ConfigService);
 
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix('api', { exclude: ['health'] });
 
   app.enableCors({
     origin: (origin, callback) => {
-      const localOrigins = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-      ];
+      const localOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
       const envOrigins = (process.env.FRONTEND_URLS || '')
         .split(',')

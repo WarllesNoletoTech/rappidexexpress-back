@@ -14,6 +14,9 @@ import { CityResult, CreateCityDto, UpdateCityDto } from './dto';
 
 @Injectable()
 export class CityService {
+  private readonly cacheTtlMs = 60_000;
+  private citiesCache: { expiresAt: number; cities: CityResult[] } | null =
+    null;
   constructor(
     @InjectRepository(CityEntity)
     private readonly cityRepository: PostgresCompatRepository<CityEntity>,
@@ -48,6 +51,24 @@ export class CityService {
     }
   }
 
+  private async getCachedCities(): Promise<CityResult[]> {
+    if (this.citiesCache && this.citiesCache.expiresAt > Date.now()) {
+      return this.citiesCache.cities;
+    }
+
+    const cities = await this.cityRepository.find({ order: { name: 'ASC' } });
+    const results = cities.map(CityResult.fromEntity);
+    this.citiesCache = {
+      cities: results,
+      expiresAt: Date.now() + this.cacheTtlMs,
+    };
+    return results;
+  }
+
+  private invalidateCache() {
+    this.citiesCache = null;
+  }
+
   async listCities(user: UserRequest): Promise<CityResult[]> {
     const shouldReturnOnlyUserCity = [
       UserType.ADMIN,
@@ -61,11 +82,10 @@ export class CityService {
         return [];
       }
 
-      const city = await this.cityRepository.findOne({
-        where: { id: user.cityId },
-      });
-
-      return city ? [CityResult.fromEntity(city)] : [];
+      const city = (await this.getCachedCities()).find(
+        (item) => item.id === user.cityId,
+      );
+      return city ? [city] : [];
     }
 
     if (user.type !== UserType.SUPERADMIN) {
@@ -74,10 +94,7 @@ export class CityService {
       );
     }
 
-    const cities = await this.cityRepository.find({
-      order: { name: 'ASC' },
-    });
-    return cities.map(CityResult.fromEntity);
+    return this.getCachedCities();
   }
 
   async createCity(data: CreateCityDto): Promise<CityResult> {
@@ -94,6 +111,8 @@ export class CityService {
       whatsappPhoneNumberId: data.whatsappPhoneNumberId?.trim() || '',
       whatsappCloudToken: data.whatsappCloudToken?.trim() || '',
     });
+
+    this.invalidateCache();
 
     return CityResult.fromEntity(city);
   }
@@ -161,6 +180,8 @@ export class CityService {
           : city.whatsappCloudToken,
     });
 
+    this.invalidateCache();
+
     return CityResult.fromEntity(updatedCity);
   }
 
@@ -174,5 +195,6 @@ export class CityService {
     }
 
     await this.cityRepository.delete(city.id);
+    this.invalidateCache();
   }
 }

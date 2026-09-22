@@ -204,14 +204,14 @@ export class UserService {
       const useIfoodIntegration =
         data.useIfoodIntegration ?? userToUpdate.useIfoodIntegration ?? false;
       const usesExternalIfoodPdv = useIfoodIntegration
-        ? (data.usesExternalIfoodPdv ?? userToUpdate.usesExternalIfoodPdv ?? false)
+        ? (data.usesExternalIfoodPdv ??
+          userToUpdate.usesExternalIfoodPdv ??
+          false)
         : false;
       const ifoodWithoutPreparationTime = useIfoodIntegration
-        ? (
-            data.ifoodWithoutPreparationTime ??
-            userToUpdate.ifoodWithoutPreparationTime ??
-            false
-          )
+        ? (data.ifoodWithoutPreparationTime ??
+          userToUpdate.ifoodWithoutPreparationTime ??
+          false)
         : false;
 
       const ifoodMerchantId = useIfoodIntegration
@@ -259,7 +259,9 @@ export class UserService {
           ifoodMerchantId !== String(userToUpdate.ifoodMerchantId || '').trim(),
         ifoodMerchantsChanged:
           JSON.stringify(ifoodMerchants) !==
-          JSON.stringify(this.normalizeIfoodMerchants(userToUpdate.ifoodMerchants)),
+          JSON.stringify(
+            this.normalizeIfoodMerchants(userToUpdate.ifoodMerchants),
+          ),
         isActiveChanged:
           Boolean(changedUser.isActive) !== Boolean(userToUpdate.isActive),
         usesExternalIfoodPdvChanged:
@@ -320,12 +322,20 @@ export class UserService {
       .retryPendingImportsForCompany(company.id)
       .then(() =>
         this.logger.log(
-          `ifood_initial_sync_triggered companyId=${company.id} merchants=${this.getActiveMerchantIds(company).map((merchantId) => this.maskMerchantId(merchantId)).join(',')}`,
+          `ifood_initial_sync_triggered companyId=${company.id} merchants=${this.getActiveMerchantIds(
+            company,
+          )
+            .map((merchantId) => this.maskMerchantId(merchantId))
+            .join(',')}`,
         ),
       )
       .catch((error) =>
         this.logger.error(
-          `ifood_initial_sync_failed companyId=${company.id} merchants=${this.getActiveMerchantIds(company).map((merchantId) => this.maskMerchantId(merchantId)).join(',')} error=${error?.message || error}`,
+          `ifood_initial_sync_failed companyId=${company.id} merchants=${this.getActiveMerchantIds(
+            company,
+          )
+            .map((merchantId) => this.maskMerchantId(merchantId))
+            .join(',')} error=${error?.message || error}`,
         ),
       );
   }
@@ -347,7 +357,8 @@ export class UserService {
         merchantId: String(merchant?.merchantId || '').trim(),
         name: String(merchant?.name || '').trim(),
         enabled: merchant?.enabled !== false,
-        pickupAddress: String(merchant?.pickupAddress || '').trim() || undefined,
+        pickupAddress:
+          String(merchant?.pickupAddress || '').trim() || undefined,
       }))
       .filter((merchant) => merchant.merchantId);
   }
@@ -460,14 +471,38 @@ export class UserService {
   }
 
   async getMyself(userId: string) {
-    try {
-      const myself = await this.userRepository.findOneBy({
-        id: userId,
-      });
-      return UserResult.fromEntity(myself);
-    } catch (error) {
-      throw error;
-    }
+    const myself = await this.userRepository.findOne({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        user: true,
+        profileImage: true,
+        location: true,
+        type: true,
+        pix: true,
+        permission: true,
+        isActive: true,
+        blocked: true,
+        blockedReason: true,
+        blockedAt: true,
+        blockedBySystem: true,
+        unblockedAt: true,
+        unblockedBy: true,
+        cityId: true,
+        useIfoodIntegration: true,
+        usesExternalIfoodPdv: true,
+        ifoodWithoutPreparationTime: true,
+        ifoodMerchantId: true,
+        ifoodMerchants: true,
+        ifoodClientId: true,
+        ifoodOrdersReleased: true,
+        ifoodOrdersUsed: true,
+        ifoodOrdersAvailable: true,
+      },
+    });
+    return UserResult.fromEntity(myself);
   }
 
   async findUserByUsername(user: string, requestUser: UserRequest) {
@@ -493,7 +528,7 @@ export class UserService {
     requestUser: UserRequest,
   ): Promise<Record<string, string>[]> {
     const startedAt = Date.now();
-    const requester = await this.findUserOrFail(requestUser.id);
+    const requester = requestUser;
 
     let where: Record<string, any>;
 
@@ -580,7 +615,6 @@ export class UserService {
       throw error;
     }
   }
-
 
   async unblockUser(id: string, requestUser: UserRequest) {
     const requester = await this.findUserOrFail(requestUser.id);

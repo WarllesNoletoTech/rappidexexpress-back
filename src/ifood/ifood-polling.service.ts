@@ -40,15 +40,21 @@ export class IfoodPollingService {
         );
       }
 
-      const merchantAuthContexts = await Promise.all(
-        merchantIds.map(async (merchantId) => ({
+      const merchantAuthContexts: Array<{
+        merchantId: string;
+        authContext: AuthContext;
+      }> = [];
+      // resolveAuthContext pode consultar usuários. Resolver em sequência evita
+      // que um ciclo de background ocupe as cinco conexões do pool.
+      for (const merchantId of merchantIds) {
+        merchantAuthContexts.push({
           merchantId,
           authContext: await this.ifoodAuthService.resolveAuthContext({
             merchantId,
           }),
-        })),
-      );
-      
+        });
+      }
+
       const merchantsByAuthContext = merchantAuthContexts.reduce(
         (acc, entry) => {
           if (!acc[entry.authContext.cacheKey]) {
@@ -138,7 +144,7 @@ export class IfoodPollingService {
               await this.sleep(delayBetweenBatchesMs);
             }
           }
-          
+
           pollingProfilesSummary.push({
             profileKey:
               currentContextEntry.authContext.profileKey ||
@@ -188,7 +194,9 @@ export class IfoodPollingService {
     });
   }
 
-  async acknowledgeEvents(eventIds: Array<string | { id: string; merchantId?: string }>) {
+  async acknowledgeEvents(
+    eventIds: Array<string | { id: string; merchantId?: string }>,
+  ) {
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
       return;
     }
@@ -342,7 +350,7 @@ export class IfoodPollingService {
 
     return uniqueMerchants;
   }
-  
+
   private maskMerchantId(merchantId?: string) {
     const normalized = String(merchantId || '').trim();
     if (!normalized) {
