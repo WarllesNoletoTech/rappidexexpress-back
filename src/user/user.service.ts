@@ -498,6 +498,7 @@ export class UserService {
   async findMotoboys(
     requestUser: UserRequest,
   ): Promise<Record<string, string>[]> {
+    const requestStartedAt = Date.now();
     const requester = await this.findUserOrFail(requestUser.id);
 
     let where;
@@ -538,34 +539,34 @@ export class UserService {
 
       const motoboysWithDeliveriesCount = await Promise.all(
         scopedMotoboys.map(async (motoboy) => {
+          // PostgreSQL: usar as colunas escalares indexadas, evitando filtros
+          // JSONB em motoboy/establishment que faziam varredura no histórico.
           const countWhere = {
             isActive: true,
-            'motoboy.id': motoboy.id,
+            motoboyId: motoboy.id,
             status: {
               $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
             },
           };
 
           const lastDeliveryWhere = {
-            'motoboy.id': motoboy.id,
+            motoboyId: motoboy.id,
             status: StatusDelivery.FINISHED,
           };
           if (requesterCityId) {
-            countWhere['establishment.cityId'] = requesterCityId;
-            lastDeliveryWhere['establishment.cityId'] = requesterCityId;
+            countWhere['establishmentCityId'] = requesterCityId;
+            lastDeliveryWhere['establishmentCityId'] = requesterCityId;
           }
 
-          const countDeliveries =
-            await this.deliveryRepository.count(countWhere);
-
-          const order = { finishedAt: 'DESC' };
-          const take = 1;
-
-          const lastDelivery = await this.deliveryRepository.find({
-            where: lastDeliveryWhere,
-            order,
-            take,
-          });
+          const [countDeliveries, lastDelivery] = await Promise.all([
+            this.deliveryRepository.count(countWhere),
+            this.deliveryRepository.find({
+              where: lastDeliveryWhere,
+              order: { finishedAt: 'DESC' },
+              take: 1,
+              select: { finishedAt: true },
+            }),
+          ]);
 
           return {
             name: `${motoboy.name} - ${countDeliveries}`,
@@ -575,7 +576,15 @@ export class UserService {
         }),
       );
 
-      return await this.changeNameForMotoboy(motoboysWithDeliveriesCount);
+      const result = await this.changeNameForMotoboy(
+        motoboysWithDeliveriesCount,
+      );
+
+      this.logger.log(
+        `GET /api/user/motoboys performance userId=${requester.id} userType=${requester.type} cityId=${requesterCityId || 'N/A'} motoboys=${scopedMotoboys.length} totalMs=${Date.now() - requestStartedAt}`,
+      );
+
+      return result;
     } catch (error) {
       throw error;
     }
