@@ -24,16 +24,10 @@ import {
   UpdateUserDto,
   UserResult,
 } from './dto';
-import { StatusDelivery, UserType } from '../shared/constants/enums.constants';
+import { UserType } from '../shared/constants/enums.constants';
 import { UserRequest } from '../shared/interfaces';
 import { addHours } from 'date-fns';
 import { IfoodImportService } from '../ifood/ifood-import.service';
-
-type MotoboyDeliverySummary = {
-  name: string;
-  lastDeliveryDate: Date | string | null;
-  id: string;
-};
 
 @Injectable()
 export class UserService {
@@ -502,7 +496,6 @@ export class UserService {
     const requester = await this.findUserOrFail(requestUser.id);
 
     let where: Record<string, any>;
-    const order = { name: 'ASC' };
 
     if (requester.type === UserType.MOTOBOY) {
       where = { id: requester.id };
@@ -510,119 +503,26 @@ export class UserService {
       where = { type: UserType.MOTOBOY };
     }
 
-    const requesterCityId = requester.cityId;
-
-    if (requesterCityId) {
-      where = { ...where, cityId: requesterCityId };
+    if (requester.cityId) {
+      where = { ...where, cityId: requester.cityId };
     }
 
-    const motoboys = await this.userRepository.find({ where, order });
+    // HOTFIX PRODUÇÃO:
+    // O frontend usa este endpoint apenas para preencher selects de motoboys.
+    // As antigas estatísticas (contagem de entregas + última entrega) varriam o
+    // histórico e, com vários dashboards abertos, saturavam o pool PostgreSQL.
+    // Retornar somente id/nome mantém o fluxo operacional e transforma este
+    // endpoint em uma consulta pequena na tabela de usuários.
+    const motoboys = await this.userRepository.find({
+      where,
+      order: { name: 'ASC' },
+      select: { id: true, name: true, cityId: true },
+    });
 
-    const scopedMotoboys =
-      requester.type === UserType.SUPERADMIN
-        ? motoboys
-        : motoboys.filter(
-            (motoboy) =>
-              motoboy.cityId &&
-              motoboy.cityId.toString() === requesterCityId?.toString(),
-          );
-
-    const motoboyIds = scopedMotoboys.map((motoboy) => motoboy.id);
-    const statsByMotoboyId = new Map<
-      string,
-      { activeCount: number; lastDeliveryDate: string | null }
-    >();
-
-    if (motoboyIds.length) {
-      try {
-        const activeQuery = this.deliveryRepository
-          .createQueryBuilder('delivery')
-          .select('delivery.motoboyId', 'motoboyId')
-          .addSelect('COUNT(*)', 'activeCount')
-          .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
-          .andWhere('delivery.isActive = true')
-          .andWhere('delivery.status NOT IN (:...terminalStatuses)', {
-            terminalStatuses: [
-              StatusDelivery.FINISHED,
-              StatusDelivery.CANCELED,
-            ],
-          })
-          .groupBy('delivery.motoboyId');
-
-        if (requesterCityId) {
-          activeQuery.andWhere(
-            'delivery.establishmentCityId = :requesterCityId',
-            { requesterCityId },
-          );
-        }
-
-        const activeStats = await activeQuery.getRawMany<{
-          motoboyId: string;
-          activeCount: string;
-        }>();
-
-        for (const stat of activeStats) {
-          statsByMotoboyId.set(stat.motoboyId, {
-            activeCount: Number(stat.activeCount) || 0,
-            lastDeliveryDate: null,
-          });
-        }
-
-        const lastDeliveryQuery = this.deliveryRepository
-          .createQueryBuilder('delivery')
-          .select('delivery.motoboyId', 'motoboyId')
-          .addSelect('MAX(delivery.finishedAt)', 'lastDeliveryDate')
-          .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
-          .andWhere('delivery.status = :finishedStatus', {
-            finishedStatus: StatusDelivery.FINISHED,
-          })
-          .groupBy('delivery.motoboyId');
-
-        if (requesterCityId) {
-          lastDeliveryQuery.andWhere(
-            'delivery.establishmentCityId = :requesterCityId',
-            { requesterCityId },
-          );
-        }
-
-        const lastDeliveryStats = await lastDeliveryQuery.getRawMany<{
-          motoboyId: string;
-          lastDeliveryDate: string | null;
-        }>();
-
-        for (const stat of lastDeliveryStats) {
-          const current = statsByMotoboyId.get(stat.motoboyId) || {
-            activeCount: 0,
-            lastDeliveryDate: null,
-          };
-          statsByMotoboyId.set(stat.motoboyId, {
-            ...current,
-            lastDeliveryDate: stat.lastDeliveryDate,
-          });
-        }
-      } catch (error) {
-        // O dashboard não deve cair se a consulta estatística atrasar/falhar.
-        // A lista de motoboys continua disponível e as estatísticas voltam
-        // como zero/sem última entrega até a próxima atualização.
-        this.logger.warn(
-          `Falha ao carregar estatísticas de motoboys; retornando lista básica. error=${error?.message || error}`,
-        );
-      }
-    }
-
-    const motoboysWithDeliveriesCount: MotoboyDeliverySummary[] =
-      scopedMotoboys.map((motoboy) => {
-        const stats = statsByMotoboyId.get(motoboy.id);
-        return {
-          name: `${motoboy.name} - ${stats?.activeCount || 0}`,
-          lastDeliveryDate: stats?.lastDeliveryDate || null,
-          id: motoboy.id,
-        };
-      });
-
-    const result = await this.changeNameForMotoboy(
-      motoboysWithDeliveriesCount,
-    );
+    const result = motoboys.map((motoboy) => ({
+      id: motoboy.id,
+      name: motoboy.name,
+    }));
 
     const totalMs = Date.now() - startedAt;
     if (totalMs >= 500) {
@@ -632,26 +532,6 @@ export class UserService {
     }
 
     return result;
-  }
-
-  async changeNameForMotoboy(
-    motoboysWithDeliveriesCount: MotoboyDeliverySummary[],
-  ): Promise<Record<string, string>[]> {
-    return motoboysWithDeliveriesCount.map((motoboy) => {
-      let hour = 'sem ultima entrega';
-
-      if (motoboy.lastDeliveryDate) {
-        const finishedAtDate = new Date(motoboy.lastDeliveryDate);
-        if (!Number.isNaN(finishedAtDate.getTime())) {
-          hour = `${finishedAtDate.toISOString().substring(11, 16)} horas`;
-        }
-      }
-
-      return {
-        name: `${motoboy.name} - ${hour}`,
-        id: motoboy.id,
-      };
-    });
   }
 
   async updateUserNotification(

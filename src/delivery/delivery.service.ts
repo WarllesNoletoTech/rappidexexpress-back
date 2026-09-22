@@ -840,11 +840,11 @@ export class DeliveryService implements OnModuleInit {
     });
 
     const totalDurationMs = Date.now() - requestStartedAt;
-    this.logger.log(
-      `GET /api/delivery performance userId=${userForRequest.id} userType=${userForRequest.type} filters=${JSON.stringify(
-        queryParams,
-      )} returned=${deliveries.length} total=${count} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
-    );
+    if (totalDurationMs >= 500) {
+      this.logger.warn(
+        `GET /api/delivery performance userType=${userForRequest.type} returned=${deliveries.length} total=${count} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
+      );
+    }
 
     return ListDeliverysResult.fromEntities(
       deliveriesWithSource as any,
@@ -874,12 +874,6 @@ export class DeliveryService implements OnModuleInit {
     );
     const dateRange = this.resolveDashboardDateRange(countQueryParams);
 
-    this.logger.log(
-      `delivery_counts userId=${userForRequest.id} userType=${userForRequest.type} cityId=${
-        countQueryParams.cityId || 'N/A'
-      } createdIn=${dateRange.createdIn} createdUntil=${dateRange.createdUntil}`,
-    );
-
     if (
       userForRequest.type === UserType.SUPERADMIN &&
       !countQueryParams.cityId
@@ -900,54 +894,118 @@ export class DeliveryService implements OnModuleInit {
       };
     }
 
-    const pendingWhere = this.buildDeliveriesWhere(userForRequest, {
-      ...countQueryParams,
-      status: StatusDelivery.PENDING,
-    } as ListDeliveriesQueryDTO);
-    Object.assign(
-      pendingWhere,
-      this.buildDashboardDateWhere(StatusDelivery.PENDING, dateRange),
-    );
-
-    const assignedWhere = this.buildAssignedDeliveriesWhere(
-      userForRequest,
-      countQueryParams,
-    );
-    Object.assign(
-      assignedWhere,
-      this.buildDashboardDateWhere(StatusDelivery.ONCOURSE, dateRange),
-    );
-
-    const waitingReleaseWhere = this.buildDeliveriesWhere(userForRequest, {
-      ...countQueryParams,
-      status: StatusDelivery.AWAITING_RELEASE,
-    } as ListDeliveriesQueryDTO);
-    Object.assign(
-      waitingReleaseWhere,
-      this.buildDashboardDateWhere(StatusDelivery.AWAITING_RELEASE, dateRange),
-    );
-
-    const adminFinancialWhere = this.buildDeliveriesWhere(userForRequest, {
-      ...countQueryParams,
-      status: StatusDelivery.FINISHED,
-    } as ListDeliveriesQueryDTO);
-    Object.assign(
-      adminFinancialWhere,
-      this.buildDashboardDateWhere(StatusDelivery.FINISHED, dateRange),
-    );
+    const cityId = countQueryParams.cityId || userForRequest.cityId;
 
     try {
-      const [pending, assigned, waitingRelease, totalEntregas, city] =
-        await Promise.all([
-          this.deliveryRepository.count(pendingWhere),
-          this.deliveryRepository.count(assignedWhere),
-          this.deliveryRepository.count(waitingReleaseWhere),
-          this.deliveryRepository.count(adminFinancialWhere),
-          countQueryParams.cityId
-            ? this.findCityEntityById(countQueryParams.cityId)
-            : Promise.resolve(null),
-        ]);
+      // Uma única agregação substitui quatro COUNT(*) simultâneos. Isso evita
+      // consumir quase todo o pool (DATABASE_POOL_MAX=5) por dashboard aberto.
+      const qb = this.deliveryRepository
+        .createQueryBuilder('delivery')
+        .select(
+          `COUNT(*) FILTER (
+            WHERE delivery."isActive" = true
+              AND delivery."status" = :pendingStatus
+              AND delivery."createdAt" BETWEEN :startAt AND :endAt
+              ${
+                userForRequest.type === UserType.SHOPKEEPER ||
+                userForRequest.type === UserType.SHOPKEEPERADMIN
+                  ? 'AND delivery."establishmentId" = :requesterId'
+                  : ''
+              }
+          )`,
+          'pending',
+        )
+        .addSelect(
+          `COUNT(*) FILTER (
+            WHERE delivery."isActive" = true
+              AND delivery."motoboyId" IS NOT NULL
+              AND delivery."status" NOT IN (:...terminalStatuses)
+              AND delivery."createdAt" BETWEEN :startAt AND :endAt
+              ${
+                userForRequest.type === UserType.MOTOBOY
+                  ? 'AND delivery."motoboyId" = :requesterId'
+                  : userForRequest.type === UserType.SHOPKEEPER ||
+                      userForRequest.type === UserType.SHOPKEEPERADMIN
+                    ? 'AND delivery."establishmentId" = :requesterId'
+                    : ''
+              }
+          )`,
+          'assigned',
+        )
+        .addSelect(
+          userForRequest.type === UserType.MOTOBOY
+            ? '0'
+            : `COUNT(*) FILTER (
+                WHERE delivery."isActive" = true
+                  AND delivery."status" = :waitingReleaseStatus
+                  AND delivery."createdAt" BETWEEN :startAt AND :endAt
+                  ${
+                    userForRequest.type === UserType.SHOPKEEPER ||
+                    userForRequest.type === UserType.SHOPKEEPERADMIN
+                      ? 'AND delivery."establishmentId" = :requesterId'
+                      : ''
+                  }
+              )`,
+          'waitingRelease',
+        )
+        .addSelect(
+          `COUNT(*) FILTER (
+            WHERE delivery."isActive" = true
+              AND delivery."status" = :finishedStatus
+              AND (
+                delivery."finishedAt" BETWEEN :startAt AND :endAt
+                OR (
+                  delivery."finishedAt" IS NULL
+                  AND delivery."updatedAt" BETWEEN :startAt AND :endAt
+                )
+                OR (
+                  delivery."finishedAt" IS NULL
+                  AND delivery."updatedAt" IS NULL
+                  AND delivery."createdAt" BETWEEN :startAt AND :endAt
+                )
+              )
+              ${
+                userForRequest.type === UserType.MOTOBOY
+                  ? 'AND delivery."motoboyId" = :requesterId'
+                  : userForRequest.type === UserType.SHOPKEEPER ||
+                      userForRequest.type === UserType.SHOPKEEPERADMIN
+                    ? 'AND delivery."establishmentId" = :requesterId'
+                    : ''
+              }
+          )`,
+          'totalEntregas',
+        )
+        .setParameters({
+          pendingStatus: StatusDelivery.PENDING,
+          waitingReleaseStatus: StatusDelivery.AWAITING_RELEASE,
+          finishedStatus: StatusDelivery.FINISHED,
+          terminalStatuses: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
+          startAt: dateRange.start,
+          endAt: dateRange.end,
+          requesterId: userForRequest.id,
+        });
 
+      if (cityId) {
+        qb.where('delivery."establishmentCityId" = :dashboardCityId', {
+          dashboardCityId: cityId,
+        });
+      }
+
+      const raw = await qb.getRawOne<{
+        pending: string;
+        assigned: string;
+        waitingRelease: string;
+        totalEntregas: string;
+      }>();
+
+      // Faz a leitura da cidade somente depois da agregação, usando no máximo
+      // uma conexão por vez para não pressionar o pool.
+      const city = cityId ? await this.findCityEntityById(cityId) : null;
+
+      const pending = Number(raw?.pending) || 0;
+      const assigned = Number(raw?.assigned) || 0;
+      const waitingRelease = Number(raw?.waitingRelease) || 0;
+      const totalEntregas = Number(raw?.totalEntregas) || 0;
       const valorAdminPorEntrega = this.getAdminDeliveryFeeValue(city);
 
       return {
@@ -957,7 +1015,7 @@ export class DeliveryService implements OnModuleInit {
         totalEntregas,
         valorAdminPorEntrega,
         totalValorAdmin: totalEntregas * valorAdminPorEntrega,
-        cityId: city?.id ?? countQueryParams.cityId ?? null,
+        cityId: city?.id ?? cityId ?? null,
         cityName: city?.name ?? null,
         createdIn: dateRange.createdIn,
         createdUntil: dateRange.createdUntil,
@@ -966,16 +1024,30 @@ export class DeliveryService implements OnModuleInit {
       };
     } catch (error: any) {
       this.logger.error(
-        `delivery_counts_error userId=${userForRequest.id} userType=${userForRequest.type} cityId=${
-          countQueryParams.cityId || 'N/A'
-        } createdIn=${dateRange.createdIn} createdUntil=${dateRange.createdUntil} message=${
-          error?.message || error
-        }`,
+        `delivery_counts_error userType=${userForRequest.type} cityId=${
+          cityId || 'N/A'
+        } createdIn=${dateRange.createdIn} createdUntil=${
+          dateRange.createdUntil
+        } message=${error?.message || error}`,
         error?.stack,
       );
-      throw new BadRequestException(
-        'Não foi possível carregar o contador de entregas.',
-      );
+
+      // O contador é informação secundária. Em caso de pressão temporária no
+      // banco, não derrubar o dashboard inteiro com HTTP 500.
+      return {
+        pending: 0,
+        assigned: 0,
+        waitingRelease: 0,
+        totalEntregas: 0,
+        valorAdminPorEntrega: 0,
+        totalValorAdmin: 0,
+        cityId: cityId ?? null,
+        cityName: null,
+        createdIn: dateRange.createdIn,
+        createdUntil: dateRange.createdUntil,
+        weekStartsOn: 'TUESDAY',
+        weekEndsOn: 'MONDAY',
+      };
     }
   }
 
