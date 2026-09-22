@@ -535,47 +535,68 @@ export class UserService {
 
     if (motoboyIds.length) {
       try {
-        const query = this.deliveryRepository
+        const activeQuery = this.deliveryRepository
           .createQueryBuilder('delivery')
           .select('delivery.motoboyId', 'motoboyId')
-          .addSelect(
-            `COUNT(*) FILTER (
-              WHERE delivery.isActive = true
-              AND delivery.status NOT IN (:...terminalStatuses)
-            )`,
-            'activeCount',
-          )
-          .addSelect(
-            `MAX(delivery.finishedAt) FILTER (
-              WHERE delivery.status = :finishedStatus
-            )`,
-            'lastDeliveryDate',
-          )
+          .addSelect('COUNT(*)', 'activeCount')
           .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
-          .setParameters({
+          .andWhere('delivery.isActive = true')
+          .andWhere('delivery.status NOT IN (:...terminalStatuses)', {
             terminalStatuses: [
               StatusDelivery.FINISHED,
               StatusDelivery.CANCELED,
             ],
+          })
+          .groupBy('delivery.motoboyId');
+
+        if (requesterCityId) {
+          activeQuery.andWhere(
+            'delivery.establishmentCityId = :requesterCityId',
+            { requesterCityId },
+          );
+        }
+
+        const activeStats = await activeQuery.getRawMany<{
+          motoboyId: string;
+          activeCount: string;
+        }>();
+
+        for (const stat of activeStats) {
+          statsByMotoboyId.set(stat.motoboyId, {
+            activeCount: Number(stat.activeCount) || 0,
+            lastDeliveryDate: null,
+          });
+        }
+
+        const lastDeliveryQuery = this.deliveryRepository
+          .createQueryBuilder('delivery')
+          .select('delivery.motoboyId', 'motoboyId')
+          .addSelect('MAX(delivery.finishedAt)', 'lastDeliveryDate')
+          .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
+          .andWhere('delivery.status = :finishedStatus', {
             finishedStatus: StatusDelivery.FINISHED,
           })
           .groupBy('delivery.motoboyId');
 
         if (requesterCityId) {
-          query.andWhere('delivery.establishmentCityId = :requesterCityId', {
-            requesterCityId,
-          });
+          lastDeliveryQuery.andWhere(
+            'delivery.establishmentCityId = :requesterCityId',
+            { requesterCityId },
+          );
         }
 
-        const stats = await query.getRawMany<{
+        const lastDeliveryStats = await lastDeliveryQuery.getRawMany<{
           motoboyId: string;
-          activeCount: string;
           lastDeliveryDate: string | null;
         }>();
 
-        for (const stat of stats) {
+        for (const stat of lastDeliveryStats) {
+          const current = statsByMotoboyId.get(stat.motoboyId) || {
+            activeCount: 0,
+            lastDeliveryDate: null,
+          };
           statsByMotoboyId.set(stat.motoboyId, {
-            activeCount: Number(stat.activeCount) || 0,
+            ...current,
             lastDeliveryDate: stat.lastDeliveryDate,
           });
         }
