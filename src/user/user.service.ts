@@ -31,7 +31,7 @@ import { IfoodImportService } from '../ifood/ifood-import.service';
 
 type MotoboyDeliverySummary = {
   name: string;
-  lastDeliveryDate: DeliveryEntity[];
+  lastDeliveryDate: Date | string | null;
   id: string;
 };
 
@@ -498,109 +498,160 @@ export class UserService {
   async findMotoboys(
     requestUser: UserRequest,
   ): Promise<Record<string, string>[]> {
+    const startedAt = Date.now();
     const requester = await this.findUserOrFail(requestUser.id);
 
-    let where;
-    const order = {
-      name: 'ASC',
-    };
+    let where: Record<string, any>;
+    const order = { name: 'ASC' };
 
     if (requester.type === UserType.MOTOBOY) {
       where = { id: requester.id };
     } else {
-      where = {
-        type: UserType.MOTOBOY,
-      };
+      where = { type: UserType.MOTOBOY };
     }
 
     const requesterCityId = requester.cityId;
 
     if (requesterCityId) {
-      where = {
-        ...where,
-        cityId: requesterCityId,
-      };
+      where = { ...where, cityId: requesterCityId };
     }
-    try {
-      const motoboys = await this.userRepository.find({
-        where,
-        order,
+
+    const motoboys = await this.userRepository.find({ where, order });
+
+    const scopedMotoboys =
+      requester.type === UserType.SUPERADMIN
+        ? motoboys
+        : motoboys.filter(
+            (motoboy) =>
+              motoboy.cityId &&
+              motoboy.cityId.toString() === requesterCityId?.toString(),
+          );
+
+    const motoboyIds = scopedMotoboys.map((motoboy) => motoboy.id);
+    const statsByMotoboyId = new Map<
+      string,
+      { activeCount: number; lastDeliveryDate: string | null }
+    >();
+
+    if (motoboyIds.length) {
+      try {
+        const activeQuery = this.deliveryRepository
+          .createQueryBuilder('delivery')
+          .select('delivery.motoboyId', 'motoboyId')
+          .addSelect('COUNT(*)', 'activeCount')
+          .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
+          .andWhere('delivery.isActive = true')
+          .andWhere('delivery.status NOT IN (:...terminalStatuses)', {
+            terminalStatuses: [
+              StatusDelivery.FINISHED,
+              StatusDelivery.CANCELED,
+            ],
+          })
+          .groupBy('delivery.motoboyId');
+
+        if (requesterCityId) {
+          activeQuery.andWhere(
+            'delivery.establishmentCityId = :requesterCityId',
+            { requesterCityId },
+          );
+        }
+
+        const activeStats = await activeQuery.getRawMany<{
+          motoboyId: string;
+          activeCount: string;
+        }>();
+
+        for (const stat of activeStats) {
+          statsByMotoboyId.set(stat.motoboyId, {
+            activeCount: Number(stat.activeCount) || 0,
+            lastDeliveryDate: null,
+          });
+        }
+
+        const lastDeliveryQuery = this.deliveryRepository
+          .createQueryBuilder('delivery')
+          .select('delivery.motoboyId', 'motoboyId')
+          .addSelect('MAX(delivery.finishedAt)', 'lastDeliveryDate')
+          .where('delivery.motoboyId IN (:...motoboyIds)', { motoboyIds })
+          .andWhere('delivery.status = :finishedStatus', {
+            finishedStatus: StatusDelivery.FINISHED,
+          })
+          .groupBy('delivery.motoboyId');
+
+        if (requesterCityId) {
+          lastDeliveryQuery.andWhere(
+            'delivery.establishmentCityId = :requesterCityId',
+            { requesterCityId },
+          );
+        }
+
+        const lastDeliveryStats = await lastDeliveryQuery.getRawMany<{
+          motoboyId: string;
+          lastDeliveryDate: string | null;
+        }>();
+
+        for (const stat of lastDeliveryStats) {
+          const current = statsByMotoboyId.get(stat.motoboyId) || {
+            activeCount: 0,
+            lastDeliveryDate: null,
+          };
+          statsByMotoboyId.set(stat.motoboyId, {
+            ...current,
+            lastDeliveryDate: stat.lastDeliveryDate,
+          });
+        }
+      } catch (error) {
+        // O dashboard não deve cair se a consulta estatística atrasar/falhar.
+        // A lista de motoboys continua disponível e as estatísticas voltam
+        // como zero/sem última entrega até a próxima atualização.
+        this.logger.warn(
+          `Falha ao carregar estatísticas de motoboys; retornando lista básica. error=${error?.message || error}`,
+        );
+      }
+    }
+
+    const motoboysWithDeliveriesCount: MotoboyDeliverySummary[] =
+      scopedMotoboys.map((motoboy) => {
+        const stats = statsByMotoboyId.get(motoboy.id);
+        return {
+          name: `${motoboy.name} - ${stats?.activeCount || 0}`,
+          lastDeliveryDate: stats?.lastDeliveryDate || null,
+          id: motoboy.id,
+        };
       });
 
-      const scopedMotoboys =
-        requester.type === UserType.SUPERADMIN
-          ? motoboys
-          : motoboys.filter(
-              (motoboy) =>
-                motoboy.cityId &&
-                motoboy.cityId.toString() === requesterCityId?.toString(),
-            );
+    const result = await this.changeNameForMotoboy(
+      motoboysWithDeliveriesCount,
+    );
 
-      const motoboysWithDeliveriesCount = await Promise.all(
-        scopedMotoboys.map(async (motoboy) => {
-          const countWhere = {
-            isActive: true,
-            'motoboy.id': motoboy.id,
-            status: {
-              $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
-            },
-          };
-
-          const lastDeliveryWhere = {
-            'motoboy.id': motoboy.id,
-            status: StatusDelivery.FINISHED,
-          };
-          if (requesterCityId) {
-            countWhere['establishment.cityId'] = requesterCityId;
-            lastDeliveryWhere['establishment.cityId'] = requesterCityId;
-          }
-
-          const countDeliveries =
-            await this.deliveryRepository.count(countWhere);
-
-          const order = { finishedAt: 'DESC' };
-          const take = 1;
-
-          const lastDelivery = await this.deliveryRepository.find({
-            where: lastDeliveryWhere,
-            order,
-            take,
-          });
-
-          return {
-            name: `${motoboy.name} - ${countDeliveries}`,
-            lastDeliveryDate: lastDelivery,
-            id: motoboy.id,
-          };
-        }),
+    const totalMs = Date.now() - startedAt;
+    if (totalMs >= 500) {
+      this.logger.warn(
+        `GET /api/user/motoboys performance userType=${requester.type} returned=${result.length} totalMs=${totalMs}`,
       );
-
-      return await this.changeNameForMotoboy(motoboysWithDeliveriesCount);
-    } catch (error) {
-      throw error;
     }
+
+    return result;
   }
 
   async changeNameForMotoboy(
     motoboysWithDeliveriesCount: MotoboyDeliverySummary[],
   ): Promise<Record<string, string>[]> {
-    const newArrayForMotoboys: Record<string, string>[] = [];
-    motoboysWithDeliveriesCount.forEach((motoboy) => {
+    return motoboysWithDeliveriesCount.map((motoboy) => {
       let hour = 'sem ultima entrega';
-      if (motoboy.lastDeliveryDate[0]) {
-        const finishedAtDate = new Date(motoboy.lastDeliveryDate[0].finishedAt);
+
+      if (motoboy.lastDeliveryDate) {
+        const finishedAtDate = new Date(motoboy.lastDeliveryDate);
         if (!Number.isNaN(finishedAtDate.getTime())) {
           hour = `${finishedAtDate.toISOString().substring(11, 16)} horas`;
         }
       }
 
-      newArrayForMotoboys.push({
+      return {
         name: `${motoboy.name} - ${hour}`,
         id: motoboy.id,
-      });
+      };
     });
-
-    return newArrayForMotoboys;
   }
 
   async updateUserNotification(

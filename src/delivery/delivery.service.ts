@@ -778,8 +778,14 @@ export class DeliveryService implements OnModuleInit {
     const requestStartedAt = Date.now();
     const userForRequest = await this.findOneUserById(user.id);
 
-    const page = Number(queryParams.page || 1);
-    const itemsPerPageParam = Number(queryParams.itemsPerPage || 100);
+    const requestedPage = Number(queryParams.page || 1);
+    const requestedItemsPerPage = Number(queryParams.itemsPerPage || 100);
+    const page = Number.isFinite(requestedPage)
+      ? Math.max(1, Math.floor(requestedPage))
+      : 1;
+    const itemsPerPageParam = Number.isFinite(requestedItemsPerPage)
+      ? Math.min(500, Math.max(1, Math.floor(requestedItemsPerPage)))
+      : 100;
     const skip = (page - 1) * itemsPerPageParam;
     const take = itemsPerPageParam;
     const where = this.buildDeliveriesWhere(userForRequest, queryParams);
@@ -790,6 +796,9 @@ export class DeliveryService implements OnModuleInit {
     const shouldIncludeDashboardCounts = this.parseBooleanQuery(
       queryParams.includeDashboardCounts,
     );
+    const shouldIncludeTotal =
+      queryParams.includeTotal === undefined ||
+      this.parseBooleanQuery(queryParams.includeTotal);
 
     const dashboardCountsPromise = shouldIncludeDashboardCounts
       ? this.getDashboardCountsByUser(userForRequest, queryParams)
@@ -804,7 +813,9 @@ export class DeliveryService implements OnModuleInit {
         take,
         order: { [sortField]: 'ASC', createdAt: 'ASC' } as any,
       }),
-      this.deliveryRepository.count(where),
+      shouldIncludeTotal
+        ? this.deliveryRepository.count(where)
+        : Promise.resolve(0),
       dashboardCountsPromise,
     ]);
     const queryDurationMs = Date.now() - queryStartedAt;
@@ -839,7 +850,7 @@ export class DeliveryService implements OnModuleInit {
       deliveriesWithSource as any,
       deliveries.length,
       page,
-      count,
+      shouldIncludeTotal ? count : deliveries.length,
       dashboardCounts,
     );
   }

@@ -40,6 +40,9 @@ export class ListDeliveriesQueryDTO {
   @IsOptional()
   includeDashboardCounts?: boolean | string;
 
+  @IsOptional()
+  includeTotal?: boolean | string;
+
   @IsString()
   @IsOptional()
   cityId?: string;
