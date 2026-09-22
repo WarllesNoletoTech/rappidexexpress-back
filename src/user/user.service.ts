@@ -507,12 +507,9 @@ export class UserService {
       where = { ...where, cityId: requester.cityId };
     }
 
-    // HOTFIX PRODUÇÃO:
-    // O frontend usa este endpoint apenas para preencher selects de motoboys.
-    // As antigas estatísticas (contagem de entregas + última entrega) varriam o
-    // histórico e, com vários dashboards abertos, saturavam o pool PostgreSQL.
-    // Retornar somente id/nome mantém o fluxo operacional e transforma este
-    // endpoint em uma consulta pequena na tabela de usuários.
+    // Hotfix de produção: este endpoint abastece apenas os selects do
+    // dashboard. Não consultar o histórico de entregas aqui evita N+1,
+    // agregações pesadas e saturação do pool PostgreSQL.
     const motoboys = await this.userRepository.find({
       where,
       order: { name: 'ASC' },
