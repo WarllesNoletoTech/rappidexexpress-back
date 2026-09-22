@@ -163,4 +163,61 @@ export class DeliveryEntity {
 
   @Column({ default: false })
   ifoodArrivedAtDestinationSynced?: boolean;
+
+  @Column({ nullable: true })
+  source?: string;
+
+  @Column({ nullable: true })
+  menuFlowOrderId?: string;
+
+  @Column({ nullable: true })
+  menuFlowOrderNumber?: string;
+
+  @Column({ nullable: true })
+  menuFlowCompanyId?: string;
+
+  @Column({ nullable: true })
+  menuFlowRestaurantName?: string;
+
+  @Column({ nullable: true })
+  menuFlowSubtotalCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowDeliveryFeeCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowServiceFeeCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowDiscountCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowTotalCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowPaymentMethod?: string;
+
+  @Column({ nullable: true })
+  menuFlowNeedsChange?: boolean;
+
+  @Column({ nullable: true })
+  menuFlowChangeForCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowExpectedChangeCents?: number;
+
+  @Column({ nullable: true })
+  menuFlowItems?: any[];
+
+  @Column({ default: false })
+  menuFlowSyncPending?: boolean;
+
+  @Column({ nullable: true })
+  menuFlowLastSyncAt?: Date;
+
+  @Column({ nullable: true })
+  menuFlowLastSyncedStatus?: string;
+
+  @Column({ nullable: true })
+  menuFlowSyncError?: string;
 }

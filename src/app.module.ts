@@ -13,6 +13,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserEntity } from './database/entities';
 import { SecurityController } from './security.controller';
 import { SecurityService } from './security.service';
+import { MenuFlowIntegrationModule } from './menuflow-integration/menuflow-integration.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { SecurityService } from './security.service';
     CityModule,
     IfoodModule,
     FinancialSettlementModule,
+    MenuFlowIntegrationModule,
     TypeOrmModule.forFeature([UserEntity]),
   ],
   controllers: [AppController, SecurityController],

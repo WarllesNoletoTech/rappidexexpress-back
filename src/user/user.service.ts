@@ -82,6 +82,8 @@ export class UserService {
     const ifoodMerchantId = useIfoodIntegration
       ? (data.ifoodMerchantId?.trim() ?? ifoodMerchants[0]?.merchantId ?? '')
       : '';
+    const menuFlowEnabled = Boolean(data.menuFlowEnabled);
+    const menuFlowCompanyId = String(data.menuFlowCompanyId || '').trim();
 
     try {
       const newUser = await this.userRepository.save({
@@ -101,6 +103,8 @@ export class UserService {
         ifoodOrdersReleased: Number(data.ifoodOrdersReleased || 0),
         ifoodOrdersUsed: Number(data.ifoodOrdersUsed || 0),
         ifoodOrdersAvailable: Number(data.ifoodOrdersAvailable || 0),
+        menuFlowEnabled,
+        menuFlowCompanyId,
         isActive: true,
         createdAt: addHours(new Date(), -3),
         updatedAt: addHours(new Date(), -3),
@@ -244,6 +248,13 @@ export class UserService {
           ? this.normalizePhone(data.managerWhatsapp)
           : userToUpdate.managerWhatsapp ?? '';
 
+      const menuFlowEnabled =
+        data.menuFlowEnabled ?? userToUpdate.menuFlowEnabled ?? false;
+      const menuFlowCompanyId =
+        data.menuFlowCompanyId !== undefined
+          ? String(data.menuFlowCompanyId || '').trim()
+          : String(userToUpdate.menuFlowCompanyId || '').trim();
+
       const changedUser = await this.userRepository.save({
         ...userToUpdate,
         ...data,
@@ -263,6 +274,8 @@ export class UserService {
           data.ifoodOrdersUsed ?? userToUpdate.ifoodOrdersUsed ?? 0,
         ifoodOrdersAvailable:
           data.ifoodOrdersAvailable ?? userToUpdate.ifoodOrdersAvailable ?? 0,
+        menuFlowEnabled,
+        menuFlowCompanyId,
         updatedAt: addHours(new Date(), -3),
       });
 

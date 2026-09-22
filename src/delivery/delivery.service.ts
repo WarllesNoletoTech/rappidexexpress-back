@@ -50,6 +50,29 @@ type DashboardDateRange = {
   end: Date;
 };
 
+type MenuFlowDeliveryMetadata = {
+  orderId: string;
+  orderNumber: string;
+  companyId: string;
+  restaurantName?: string;
+  subtotalCents: number;
+  deliveryFeeCents: number;
+  serviceFeeCents: number;
+  discountCents: number;
+  totalCents: number;
+  paymentMethod: string;
+  needsChange?: boolean;
+  changeForCents?: number;
+  expectedChangeCents?: number;
+  items: any[];
+};
+
+type CreateDeliveryOptions = {
+  skipCreditConsumption?: boolean;
+  creditOrderId?: string;
+  menuFlow?: MenuFlowDeliveryMetadata;
+};
+
 @Injectable()
 export class DeliveryService implements OnModuleInit {
   private readonly logger = new Logger(DeliveryService.name);
@@ -1537,7 +1560,7 @@ export class DeliveryService implements OnModuleInit {
   async createDelivery(
     deliveryData: CreateDeliveryDto,
     user: UserRequest,
-    options?: { skipCreditConsumption?: boolean; creditOrderId?: string },
+    options?: CreateDeliveryOptions,
   ): Promise<DeliveryResult> {
     const userFinded = await this.findOneUserById(user.id);
     let establishment;
@@ -1622,6 +1645,8 @@ export class DeliveryService implements OnModuleInit {
         );
       }
 
+      const menuFlow = options?.menuFlow;
+
       const newDelivery = await this.deliveryRepository.save({
         id: deliveryId,
         clientName,
@@ -1650,6 +1675,23 @@ export class DeliveryService implements OnModuleInit {
         ifoodMerchantId,
         ifoodMerchantName,
         ifoodImportedAt: ifoodOrderId ? addHours(new Date(), -3) : undefined,
+        source: menuFlow ? 'MENU_FLOW' : undefined,
+        menuFlowOrderId: menuFlow?.orderId,
+        menuFlowOrderNumber: menuFlow?.orderNumber,
+        menuFlowCompanyId: menuFlow?.companyId,
+        menuFlowRestaurantName: menuFlow?.restaurantName,
+        menuFlowSubtotalCents: menuFlow?.subtotalCents,
+        menuFlowDeliveryFeeCents: menuFlow?.deliveryFeeCents,
+        menuFlowServiceFeeCents: menuFlow?.serviceFeeCents,
+        menuFlowDiscountCents: menuFlow?.discountCents,
+        menuFlowTotalCents: menuFlow?.totalCents,
+        menuFlowPaymentMethod: menuFlow?.paymentMethod,
+        menuFlowNeedsChange: menuFlow?.needsChange,
+        menuFlowChangeForCents: menuFlow?.changeForCents,
+        menuFlowExpectedChangeCents: menuFlow?.expectedChangeCents,
+        menuFlowItems: menuFlow?.items,
+        menuFlowSyncPending: false,
+        menuFlowSyncError: '',
         isActive: true,
         createdBy: user.id,
         onCoursedAt,
@@ -1830,6 +1872,14 @@ export class DeliveryService implements OnModuleInit {
         status: StatusDelivery.CANCELED,
         isActive: false,
         updatedAt: addHours(new Date(), -3),
+        menuFlowSyncPending:
+          deliveryFinded.source === 'MENU_FLOW'
+            ? true
+            : deliveryFinded.menuFlowSyncPending,
+        menuFlowSyncError:
+          deliveryFinded.source === 'MENU_FLOW'
+            ? ''
+            : deliveryFinded.menuFlowSyncError,
       });
 
       await this.refundCreditForCanceledDelivery(
@@ -2059,6 +2109,10 @@ export class DeliveryService implements OnModuleInit {
         releasedAt: addHours(new Date(), -3),
         releasedBy: userFinded.id,
         updatedAt: addHours(new Date(), -3),
+        menuFlowSyncPending:
+          delivery.source === 'MENU_FLOW' ? true : delivery.menuFlowSyncPending,
+        menuFlowSyncError:
+          delivery.source === 'MENU_FLOW' ? '' : delivery.menuFlowSyncError,
       }),
     );
 
@@ -2170,6 +2224,14 @@ export class DeliveryService implements OnModuleInit {
       ...sanitizedData,
     });
 
+    if (
+      currentDelivery.source === 'MENU_FLOW' &&
+      currentDelivery.status !== persistable.status
+    ) {
+      persistable.menuFlowSyncPending = true;
+      persistable.menuFlowSyncError = '';
+    }
+
     const { internalId, id, ...setPayload } = persistable;
 
     void internalId;
@@ -2227,6 +2289,11 @@ export class DeliveryService implements OnModuleInit {
       ifoodStatus: data.ifoodStatus ?? null,
       externalStatus: data.externalStatus ?? null,
       logisticsStatus: data.logisticsStatus ?? null,
+      ifoodOrderId: data.ifoodOrderId ?? null,
+      ifoodDisplayId: data.ifoodDisplayId ?? null,
+      orderLocator: data.orderLocator ?? null,
+      ifoodMerchantId: data.ifoodMerchantId ?? null,
+      ifoodMerchantName: data.ifoodMerchantName ?? null,
       ifoodImportedAt: data.ifoodImportedAt ?? null,
       ifoodLastEventCode: data.ifoodLastEventCode ?? null,
       ifoodLastEventFullCode: data.ifoodLastEventFullCode ?? null,
@@ -2240,6 +2307,25 @@ export class DeliveryService implements OnModuleInit {
       ifoodDispatchSynced: data.ifoodDispatchSynced ?? false,
       ifoodArrivedAtDestinationSynced:
         data.ifoodArrivedAtDestinationSynced ?? false,
+      source: data.source ?? null,
+      menuFlowOrderId: data.menuFlowOrderId ?? null,
+      menuFlowOrderNumber: data.menuFlowOrderNumber ?? null,
+      menuFlowCompanyId: data.menuFlowCompanyId ?? null,
+      menuFlowRestaurantName: data.menuFlowRestaurantName ?? null,
+      menuFlowSubtotalCents: data.menuFlowSubtotalCents ?? null,
+      menuFlowDeliveryFeeCents: data.menuFlowDeliveryFeeCents ?? null,
+      menuFlowServiceFeeCents: data.menuFlowServiceFeeCents ?? null,
+      menuFlowDiscountCents: data.menuFlowDiscountCents ?? null,
+      menuFlowTotalCents: data.menuFlowTotalCents ?? null,
+      menuFlowPaymentMethod: data.menuFlowPaymentMethod ?? null,
+      menuFlowNeedsChange: data.menuFlowNeedsChange ?? false,
+      menuFlowChangeForCents: data.menuFlowChangeForCents ?? null,
+      menuFlowExpectedChangeCents: data.menuFlowExpectedChangeCents ?? null,
+      menuFlowItems: data.menuFlowItems ?? [],
+      menuFlowSyncPending: data.menuFlowSyncPending ?? false,
+      menuFlowLastSyncAt: data.menuFlowLastSyncAt ?? null,
+      menuFlowLastSyncedStatus: data.menuFlowLastSyncedStatus ?? null,
+      menuFlowSyncError: data.menuFlowSyncError ?? '',
     };
   }
 
@@ -2362,6 +2448,11 @@ export class DeliveryService implements OnModuleInit {
       onCoursedAt: changedDelivery.onCoursedAt ?? dateForUse,
       updatedAt: dateForUse,
     });
+
+    if (deliveryFinded.source === 'MENU_FLOW') {
+      deliveryToPersist.menuFlowSyncPending = true;
+      deliveryToPersist.menuFlowSyncError = '';
+    }
 
     const { internalId, id, ...claimPayload } = deliveryToPersist;
 

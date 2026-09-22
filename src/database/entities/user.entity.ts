@@ -115,6 +115,12 @@ export class UserEntity {
   @Column({ default: 0 })
   ifoodOrdersAvailable: number;
 
+  @Column({ default: false })
+  menuFlowEnabled: boolean;
+
+  @Column({ nullable: true })
+  menuFlowCompanyId?: string;
+
   @Column()
   createdAt: Date;
 

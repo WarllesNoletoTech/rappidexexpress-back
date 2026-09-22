@@ -23,6 +23,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "check:menuflow-integration": "node scripts/migrate-menuflow-integration.js",
+    "migrate:menuflow-integration": "node scripts/migrate-menuflow-integration.js --apply",
     "diagnose:mongo": "node scripts/diagnose-mongo-legacy.js"
   },
   "dependencies": {

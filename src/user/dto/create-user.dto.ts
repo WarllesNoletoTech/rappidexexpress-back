@@ -92,6 +92,14 @@ export class CreateUserDto {
   @IsOptional()
   @IsNumber()
   ifoodOrdersAvailable?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  menuFlowEnabled?: boolean;
+
+  @IsString()
+  @IsOptional()
+  menuFlowCompanyId?: string;
 }
 
 class IfoodMerchantDto {
