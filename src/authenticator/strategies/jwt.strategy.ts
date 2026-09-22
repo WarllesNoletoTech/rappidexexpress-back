@@ -1,9 +1,9 @@
-import { PostgresCompatRepository } from '../../database/postgres-compat.repository';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { MongoRepository } from 'typeorm';
 import { UserEntity } from '../../database/entities/user.entity';
 
 @Injectable()
@@ -11,7 +11,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     private readonly configService: ConfigService,
     @InjectRepository(UserEntity)
-    private readonly userRepository: PostgresCompatRepository<UserEntity>,
+    private readonly userRepository: MongoRepository<UserEntity>,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -29,20 +29,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     if (currentUser.blocked) {
-      throw new ForbiddenException(
-        'Usuário bloqueado. Procure o administrador.',
-      );
+      throw new ForbiddenException('Usuário bloqueado. Procure o administrador.');
     }
 
-    // A autorização já fez uma leitura da linha atual. Use os atributos atuais
-    // do banco (e não os possivelmente antigos do token) nas regras de cidade.
-    return {
-      id: currentUser.id || id,
-      user: currentUser.user || user,
-      type: currentUser.type || type,
-      phone: currentUser.phone || phone,
-      permission: currentUser.permission || permission,
-      cityId: currentUser.cityId || cityId,
-    };
+    return { id, user, type, phone, permission, cityId };
   }
 }

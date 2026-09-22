@@ -51,7 +51,6 @@ describe('DeliveryService', () => {
             deleteOne: jest.fn(),
             updateOne: jest.fn(),
             count: jest.fn(),
-            createQueryBuilder: jest.fn(),
           },
         },
         {
@@ -124,47 +123,6 @@ describe('DeliveryService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
-  });
-
-  it('includeTotal=false não executa count()', async () => {
-    userRepository.findOneBy.mockResolvedValue({
-      id: 'admin-1',
-      type: UserType.ADMIN,
-      cityId: 'city-1',
-    });
-    deliveryRepository.find.mockResolvedValue([]);
-
-    await service.listDeliveries(
-      { id: 'admin-1', type: UserType.ADMIN } as any,
-      { page: 1, itemsPerPage: 20, includeTotal: false } as any,
-    );
-
-    expect(deliveryRepository.count).not.toHaveBeenCalled();
-  });
-
-  it('falha no contador retorna fallback em vez de propagar HTTP 500', async () => {
-    userRepository.findOneBy.mockResolvedValue({
-      id: 'admin-1',
-      type: UserType.ADMIN,
-      cityId: 'city-1',
-    });
-    deliveryRepository.createQueryBuilder.mockImplementation(() => {
-      throw Object.assign(new Error('pool timeout'), { code: '53300' });
-    });
-
-    await expect(
-      service.getDashboardCounts(
-        { id: 'admin-1', type: UserType.ADMIN } as any,
-        {} as any,
-      ),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        pending: 0,
-        assigned: 0,
-        waitingRelease: 0,
-        totalEntregas: 0,
-      }),
-    );
   });
 
   it('deve executar sequência logística no status ONCOURSE', async () => {
@@ -415,7 +373,7 @@ describe('DeliveryService', () => {
     );
   });
 
-  it('aplica o período de finalização no PostgreSQL sem filtro JSONB', () => {
+  it('aplica filtro de relatório sempre por createdAt no where do MongoDB', () => {
     const where = (service as any).buildDeliveriesWhere(
       { type: 'superadmin' },
       {
@@ -425,40 +383,37 @@ describe('DeliveryService', () => {
       },
     );
 
-    expect(where.$or).toHaveLength(3);
-    expect(where.createdAt).toBeUndefined();
+    expect(where.$or).toBeUndefined();
+    expect(where.finishedAt).toBeUndefined();
+    expect(where.updatedAt).toBeUndefined();
+    expect(where.createdAt).toEqual({
+      $gte: new Date('2026-06-23T00:00:00.000Z'),
+      $lte: new Date('2026-06-23T23:59:59.999Z'),
+    });
     expect(where.status).toEqual({ $in: [StatusDelivery.FINISHED] });
-    expect(where['establishment.cityId']).toBeUndefined();
-    expect(where['motoboy.id']).toBeUndefined();
   });
 
-  it('filtra entregas finalizadas em memória pelo dia de finishedAt', () => {
-    const queryParams = {
+  it('filtra entregas finalizadas em memória pelo dia de createdAt', () => {
+    const delivery = {
       status: StatusDelivery.FINISHED,
-      createdIn: '2026-06-23',
-      createdUntil: '2026-06-23',
+      createdAt: new Date('2026-06-22T23:50:00.000Z'),
+      finishedAt: new Date('2026-06-23T00:10:00.000Z'),
     };
 
     expect(
-      (service as any).isDeliveryInsideReportDateFilter(
-        {
-          status: StatusDelivery.FINISHED,
-          createdAt: new Date('2026-06-22T23:30:00.000Z'),
-          finishedAt: new Date('2026-06-23T00:39:00.000Z'),
-        },
-        queryParams,
-      ),
+      (service as any).isDeliveryInsideReportDateFilter(delivery, {
+        status: StatusDelivery.FINISHED,
+        createdIn: '2026-06-22',
+        createdUntil: '2026-06-22',
+      }),
     ).toBe(true);
 
     expect(
-      (service as any).isDeliveryInsideReportDateFilter(
-        {
-          status: StatusDelivery.FINISHED,
-          createdAt: new Date('2026-06-23T10:00:00.000Z'),
-          finishedAt: new Date('2026-06-24T00:39:00.000Z'),
-        },
-        queryParams,
-      ),
+      (service as any).isDeliveryInsideReportDateFilter(delivery, {
+        status: StatusDelivery.FINISHED,
+        createdIn: '2026-06-23',
+        createdUntil: '2026-06-23',
+      }),
     ).toBe(false);
   });
 

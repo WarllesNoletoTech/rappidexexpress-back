@@ -1,27 +1,25 @@
-import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import { ObjectId } from 'mongodb';
+import { Column, Entity, Index, ObjectIdColumn } from 'typeorm';
 
 @Entity()
-@Index('IDX_IFOOD_EVENT_EVENT_ID', ['eventId'], { unique: true })
-@Index('IDX_IFOOD_EVENT_ORDER_PROCESSED', ['orderId', 'processedAt'])
-@Index('IDX_IFOOD_EVENT_MERCHANT_PROCESSED', ['merchantId', 'processedAt'])
-@Index('IDX_IFOOD_EVENT_ACK_PROCESSED', ['acknowledged', 'processedAt'])
 export class IfoodEventEntity {
-  @PrimaryGeneratedColumn('uuid')
-  internalId: string;
+  @ObjectIdColumn()
+  internalId: ObjectId;
 
   @Column()
+  @Index({ unique: true })
   eventId: string;
 
-  @Column({ nullable: true })
+  @Column()
   orderId: string;
 
-  @Column({ nullable: true })
+  @Column()
   merchantId: string;
 
-  @Column({ nullable: true })
+  @Column()
   code: string;
 
-  @Column({ nullable: true })
+  @Column()
   fullCode: string;
 
   @Column({ nullable: true })
@@ -30,7 +28,7 @@ export class IfoodEventEntity {
   @Column({ nullable: true })
   createdAt?: string;
 
-  @Column({ type: 'timestamptz' })
+  @Column()
   processedAt: Date;
 
   @Column({ default: false })

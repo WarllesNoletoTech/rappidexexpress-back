@@ -1,5 +1,3 @@
-import { PostgresCompatRepository } from '../database/postgres-compat.repository';
-import { toSafeUserLogSnapshot } from '../shared/utils/user-log-snapshot';
 import {
   BadRequestException,
   Injectable,
@@ -7,9 +5,11 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import { MongoRepository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { v4 as uuid } from 'uuid';
+import { ObjectId } from 'mongodb';
 
 import {
   CityEntity,
@@ -24,23 +24,29 @@ import {
   UpdateUserDto,
   UserResult,
 } from './dto';
-import { UserType } from '../shared/constants/enums.constants';
+import { StatusDelivery, UserType } from '../shared/constants/enums.constants';
 import { UserRequest } from '../shared/interfaces';
 import { addHours } from 'date-fns';
 import { IfoodImportService } from '../ifood/ifood-import.service';
+
+type MotoboyDeliverySummary = {
+  name: string;
+  lastDeliveryDate: DeliveryEntity[];
+  id: string;
+};
 
 @Injectable()
 export class UserService {
   private readonly logger = new Logger(UserService.name);
   constructor(
     @InjectRepository(UserEntity)
-    private readonly userRepository: PostgresCompatRepository<UserEntity>,
+    private readonly userRepository: MongoRepository<UserEntity>,
     @InjectRepository(DeliveryEntity)
-    private readonly deliveryRepository: PostgresCompatRepository<DeliveryEntity>,
+    private readonly deliveryRepository: MongoRepository<DeliveryEntity>,
     @InjectRepository(LogEntity)
-    private readonly logRepository: PostgresCompatRepository<LogEntity>,
+    private readonly logRepository: MongoRepository<LogEntity>,
     @InjectRepository(CityEntity)
-    private readonly cityRepository: PostgresCompatRepository<CityEntity>,
+    private readonly cityRepository: MongoRepository<CityEntity>,
     private readonly ifoodImportService: IfoodImportService,
   ) {}
 
@@ -62,6 +68,7 @@ export class UserService {
     const passHash = await bcrypt.hash(data.password, salt);
 
     const phone = this.normalizePhone(data.phone);
+    const managerWhatsapp = this.normalizePhone(data.managerWhatsapp);
 
     const city = await this.resolveCity(data.cityId, requester);
     const useIfoodIntegration = Boolean(data.useIfoodIntegration);
@@ -80,8 +87,9 @@ export class UserService {
       const newUser = await this.userRepository.save({
         id: uuid(),
         ...data,
-        cityId: city.id,
+        cityId: city.id.toHexString(),
         phone,
+        managerWhatsapp,
         password: passHash,
         useIfoodIntegration,
         usesExternalIfoodPdv,
@@ -197,21 +205,21 @@ export class UserService {
     let cityId = userToUpdate.cityId;
     if (data.cityId) {
       const city = await this.resolveCity(data.cityId, requester);
-      cityId = city.id;
+      cityId = city.id.toHexString();
     }
 
     try {
       const useIfoodIntegration =
         data.useIfoodIntegration ?? userToUpdate.useIfoodIntegration ?? false;
       const usesExternalIfoodPdv = useIfoodIntegration
-        ? (data.usesExternalIfoodPdv ??
-          userToUpdate.usesExternalIfoodPdv ??
-          false)
+        ? (data.usesExternalIfoodPdv ?? userToUpdate.usesExternalIfoodPdv ?? false)
         : false;
       const ifoodWithoutPreparationTime = useIfoodIntegration
-        ? (data.ifoodWithoutPreparationTime ??
-          userToUpdate.ifoodWithoutPreparationTime ??
-          false)
+        ? (
+            data.ifoodWithoutPreparationTime ??
+            userToUpdate.ifoodWithoutPreparationTime ??
+            false
+          )
         : false;
 
       const ifoodMerchantId = useIfoodIntegration
@@ -231,11 +239,17 @@ export class UserService {
           ? this.normalizePhone(data.phone) || userToUpdate.phone
           : userToUpdate.phone;
 
+      const managerWhatsapp =
+        data.managerWhatsapp !== undefined
+          ? this.normalizePhone(data.managerWhatsapp)
+          : userToUpdate.managerWhatsapp ?? '';
+
       const changedUser = await this.userRepository.save({
         ...userToUpdate,
         ...data,
         cityId,
         phone,
+        managerWhatsapp,
         useIfoodIntegration,
         usesExternalIfoodPdv,
         ifoodWithoutPreparationTime,
@@ -259,9 +273,7 @@ export class UserService {
           ifoodMerchantId !== String(userToUpdate.ifoodMerchantId || '').trim(),
         ifoodMerchantsChanged:
           JSON.stringify(ifoodMerchants) !==
-          JSON.stringify(
-            this.normalizeIfoodMerchants(userToUpdate.ifoodMerchants),
-          ),
+          JSON.stringify(this.normalizeIfoodMerchants(userToUpdate.ifoodMerchants)),
         isActiveChanged:
           Boolean(changedUser.isActive) !== Boolean(userToUpdate.isActive),
         usesExternalIfoodPdvChanged:
@@ -322,20 +334,12 @@ export class UserService {
       .retryPendingImportsForCompany(company.id)
       .then(() =>
         this.logger.log(
-          `ifood_initial_sync_triggered companyId=${company.id} merchants=${this.getActiveMerchantIds(
-            company,
-          )
-            .map((merchantId) => this.maskMerchantId(merchantId))
-            .join(',')}`,
+          `ifood_initial_sync_triggered companyId=${company.id} merchants=${this.getActiveMerchantIds(company).map((merchantId) => this.maskMerchantId(merchantId)).join(',')}`,
         ),
       )
       .catch((error) =>
         this.logger.error(
-          `ifood_initial_sync_failed companyId=${company.id} merchants=${this.getActiveMerchantIds(
-            company,
-          )
-            .map((merchantId) => this.maskMerchantId(merchantId))
-            .join(',')} error=${error?.message || error}`,
+          `ifood_initial_sync_failed companyId=${company.id} merchants=${this.getActiveMerchantIds(company).map((merchantId) => this.maskMerchantId(merchantId)).join(',')} error=${error?.message || error}`,
         ),
       );
   }
@@ -357,8 +361,7 @@ export class UserService {
         merchantId: String(merchant?.merchantId || '').trim(),
         name: String(merchant?.name || '').trim(),
         enabled: merchant?.enabled !== false,
-        pickupAddress:
-          String(merchant?.pickupAddress || '').trim() || undefined,
+        pickupAddress: String(merchant?.pickupAddress || '').trim() || undefined,
       }))
       .filter((merchant) => merchant.merchantId);
   }
@@ -401,7 +404,7 @@ export class UserService {
   ): Promise<CityEntity> {
     if (id) {
       const city = await this.cityRepository.findOne({
-        where: { id },
+        where: { _id: new ObjectId(id) },
       });
 
       if (!city) {
@@ -409,7 +412,7 @@ export class UserService {
       }
 
       if (requestingUser) {
-        this.ensureCityAccess(requestingUser, city.id);
+        this.ensureCityAccess(requestingUser, city.id.toHexString());
       }
 
       return city;
@@ -421,7 +424,7 @@ export class UserService {
       }
 
       const city = await this.cityRepository.findOne({
-        where: { id: requestingUser.cityId },
+        where: { _id: new ObjectId(requestingUser.cityId) },
       });
 
       if (!city) {
@@ -471,38 +474,14 @@ export class UserService {
   }
 
   async getMyself(userId: string) {
-    const myself = await this.userRepository.findOne({
-      where: { id: userId },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        user: true,
-        profileImage: true,
-        location: true,
-        type: true,
-        pix: true,
-        permission: true,
-        isActive: true,
-        blocked: true,
-        blockedReason: true,
-        blockedAt: true,
-        blockedBySystem: true,
-        unblockedAt: true,
-        unblockedBy: true,
-        cityId: true,
-        useIfoodIntegration: true,
-        usesExternalIfoodPdv: true,
-        ifoodWithoutPreparationTime: true,
-        ifoodMerchantId: true,
-        ifoodMerchants: true,
-        ifoodClientId: true,
-        ifoodOrdersReleased: true,
-        ifoodOrdersUsed: true,
-        ifoodOrdersAvailable: true,
-      },
-    });
-    return UserResult.fromEntity(myself);
+    try {
+      const myself = await this.userRepository.findOneBy({
+        id: userId,
+      });
+      return UserResult.fromEntity(myself);
+    } catch (error) {
+      throw error;
+    }
   }
 
   async findUserByUsername(user: string, requestUser: UserRequest) {
@@ -527,46 +506,109 @@ export class UserService {
   async findMotoboys(
     requestUser: UserRequest,
   ): Promise<Record<string, string>[]> {
-    const startedAt = Date.now();
-    const requester = requestUser;
+    const requester = await this.findUserOrFail(requestUser.id);
 
-    let where: Record<string, any>;
+    let where;
+    const order = {
+      name: 'ASC',
+    };
 
     if (requester.type === UserType.MOTOBOY) {
       where = { id: requester.id };
     } else {
-      where = { type: UserType.MOTOBOY };
+      where = {
+        type: UserType.MOTOBOY,
+      };
     }
 
-    if (requester.cityId) {
-      where = { ...where, cityId: requester.cityId };
-    }
+    const requesterCityId = requester.cityId;
 
-    // HOTFIX PRODUÇÃO:
-    // O frontend usa este endpoint apenas para preencher selects de motoboys.
-    // As antigas estatísticas (contagem de entregas + última entrega) varriam o
-    // histórico e, com vários dashboards abertos, saturavam o pool PostgreSQL.
-    // Retornar somente id/nome mantém o fluxo operacional e transforma este
-    // endpoint em uma consulta pequena na tabela de usuários.
-    const motoboys = await this.userRepository.find({
-      where,
-      order: { name: 'ASC' },
-      select: { id: true, name: true, cityId: true },
+    if (requesterCityId) {
+      where = {
+        ...where,
+        cityId: requesterCityId,
+      };
+    }
+    try {
+      const motoboys = await this.userRepository.find({
+        where,
+        order,
+      });
+
+      const scopedMotoboys =
+        requester.type === UserType.SUPERADMIN
+          ? motoboys
+          : motoboys.filter(
+              (motoboy) =>
+                motoboy.cityId &&
+                motoboy.cityId.toString() === requesterCityId?.toString(),
+            );
+
+      const motoboysWithDeliveriesCount = await Promise.all(
+        scopedMotoboys.map(async (motoboy) => {
+          const countWhere = {
+            isActive: true,
+            'motoboy.id': motoboy.id,
+            status: {
+              $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
+            },
+          };
+
+          const lastDeliveryWhere = {
+            'motoboy.id': motoboy.id,
+            status: StatusDelivery.FINISHED,
+          };
+          if (requesterCityId) {
+            countWhere['establishment.cityId'] = requesterCityId;
+            lastDeliveryWhere['establishment.cityId'] = requesterCityId;
+          }
+
+          const countDeliveries =
+            await this.deliveryRepository.count(countWhere);
+
+          const order = { finishedAt: 'DESC' };
+          const take = 1;
+
+          const lastDelivery = await this.deliveryRepository.find({
+            where: lastDeliveryWhere,
+            order,
+            take,
+          });
+
+          return {
+            name: `${motoboy.name} - ${countDeliveries}`,
+            lastDeliveryDate: lastDelivery,
+            id: motoboy.id,
+          };
+        }),
+      );
+
+      return await this.changeNameForMotoboy(motoboysWithDeliveriesCount);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async changeNameForMotoboy(
+    motoboysWithDeliveriesCount: MotoboyDeliverySummary[],
+  ): Promise<Record<string, string>[]> {
+    const newArrayForMotoboys: Record<string, string>[] = [];
+    motoboysWithDeliveriesCount.forEach((motoboy) => {
+      let hour = 'sem ultima entrega';
+      if (motoboy.lastDeliveryDate[0]) {
+        const finishedAtDate = new Date(motoboy.lastDeliveryDate[0].finishedAt);
+        if (!Number.isNaN(finishedAtDate.getTime())) {
+          hour = `${finishedAtDate.toISOString().substring(11, 16)} horas`;
+        }
+      }
+
+      newArrayForMotoboys.push({
+        name: `${motoboy.name} - ${hour}`,
+        id: motoboy.id,
+      });
     });
 
-    const result = motoboys.map((motoboy) => ({
-      id: motoboy.id,
-      name: motoboy.name,
-    }));
-
-    const totalMs = Date.now() - startedAt;
-    if (totalMs >= 500) {
-      this.logger.warn(
-        `GET /api/user/motoboys performance userType=${requester.type} returned=${result.length} totalMs=${totalMs}`,
-      );
-    }
-
-    return result;
+    return newArrayForMotoboys;
   }
 
   async updateUserNotification(
@@ -590,7 +632,7 @@ export class UserService {
       where: 'Atualizar notificação',
       type: 'Log para atualizar notificação',
       error: JSON.stringify(data.notification),
-      user: toSafeUserLogSnapshot(existsUserWithThisUsername),
+      user: existsUserWithThisUsername,
       status: 'notificação do usuário atualizada',
     };
 
@@ -608,13 +650,14 @@ export class UserService {
         where: 'Atualizar notificação',
         type: 'Log para atualizar notificação',
         error: `${error}`,
-        user: toSafeUserLogSnapshot(existsUserWithThisUsername),
+        user: existsUserWithThisUsername,
         status: JSON.stringify(data.notification),
       };
       await this.logRepository.save(newLogError);
       throw error;
     }
   }
+
 
   async unblockUser(id: string, requestUser: UserRequest) {
     const requester = await this.findUserOrFail(requestUser.id);

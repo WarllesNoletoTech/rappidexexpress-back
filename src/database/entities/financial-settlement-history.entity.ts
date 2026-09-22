@@ -1,52 +1,48 @@
-import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import { ObjectId } from 'mongodb';
+import { Column, Entity, ObjectIdColumn } from 'typeorm';
 
 @Entity()
-@Index('IDX_FIN_SETTLEMENT_ESTABLISHMENT_PERIOD', [
-  'establishmentId',
-  'periodStart',
-  'periodEnd',
-])
 export class FinancialSettlementHistoryEntity {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+  @ObjectIdColumn()
+  id: ObjectId;
 
-  @Column({ type: 'varchar', length: 64 })
+  @Column()
   establishmentId: string;
 
   @Column()
   establishmentName: string;
 
-  @Column({ nullable: true, type: 'varchar', length: 64 })
+  @Column({ nullable: true })
   cityId?: string;
 
   @Column({ nullable: true })
   cityName?: string;
 
-  @Column({ type: 'timestamptz' })
+  @Column()
   periodStart: Date;
 
-  @Column({ type: 'timestamptz' })
+  @Column()
   periodEnd: Date;
 
-  @Column({ type: 'integer' })
+  @Column()
   deliveriesCount: number;
 
-  @Column({ type: 'double precision' })
+  @Column()
   deliveryFeeValue: number;
 
-  @Column({ type: 'double precision' })
+  @Column()
   total: number;
 
   @Column({ nullable: true })
   includeMonthlyFee?: boolean;
 
-  @Column({ nullable: true, type: 'double precision' })
+  @Column({ nullable: true })
   monthlyFeeValue?: number;
 
-  @Column({ nullable: true })
+  @Column()
   pixKey: string;
 
-  @Column({ nullable: true })
+  @Column()
   whatsappPhone: string;
 
   @Column({ nullable: true })
@@ -58,10 +54,10 @@ export class FinancialSettlementHistoryEntity {
   @Column()
   filename: string;
 
-  @Column({ type: 'timestamptz' })
+  @Column()
   sentAt: Date;
 
-  @Column({ type: 'varchar' })
+  @Column()
   status:
     | 'PDF_GERADO'
     | 'WHATSAPP_ABERTO'
@@ -70,6 +66,6 @@ export class FinancialSettlementHistoryEntity {
     | 'erro'
     | 'pendente';
 
-  @Column({ nullable: true, type: 'text' })
+  @Column({ nullable: true })
   errorMessage?: string;
 }

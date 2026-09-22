@@ -1,11 +1,11 @@
-import { PostgresCompatRepository } from '../database/postgres-compat.repository';
 import {
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { v4 as uuid } from 'uuid';
+import { ObjectId } from 'mongodb';
+import { MongoRepository } from 'typeorm';
 
 import { CityEntity } from '../database/entities/city.entity';
 import { UserType } from '../shared/constants/enums.constants';
@@ -14,12 +14,9 @@ import { CityResult, CreateCityDto, UpdateCityDto } from './dto';
 
 @Injectable()
 export class CityService {
-  private readonly cacheTtlMs = 60_000;
-  private citiesCache: { expiresAt: number; cities: CityResult[] } | null =
-    null;
   constructor(
     @InjectRepository(CityEntity)
-    private readonly cityRepository: PostgresCompatRepository<CityEntity>,
+    private readonly cityRepository: MongoRepository<CityEntity>,
   ) {}
 
   private normalizeCurrencyValue(value?: number | string): number | undefined {
@@ -51,24 +48,6 @@ export class CityService {
     }
   }
 
-  private async getCachedCities(): Promise<CityResult[]> {
-    if (this.citiesCache && this.citiesCache.expiresAt > Date.now()) {
-      return this.citiesCache.cities;
-    }
-
-    const cities = await this.cityRepository.find({ order: { name: 'ASC' } });
-    const results = cities.map(CityResult.fromEntity);
-    this.citiesCache = {
-      cities: results,
-      expiresAt: Date.now() + this.cacheTtlMs,
-    };
-    return results;
-  }
-
-  private invalidateCache() {
-    this.citiesCache = null;
-  }
-
   async listCities(user: UserRequest): Promise<CityResult[]> {
     const shouldReturnOnlyUserCity = [
       UserType.ADMIN,
@@ -78,14 +57,15 @@ export class CityService {
     ].includes(user.type as UserType);
 
     if (shouldReturnOnlyUserCity) {
-      if (!user.cityId) {
+      if (!user.cityId || !ObjectId.isValid(user.cityId)) {
         return [];
       }
 
-      const city = (await this.getCachedCities()).find(
-        (item) => item.id === user.cityId,
-      );
-      return city ? [city] : [];
+      const city = await this.cityRepository.findOne({
+        where: { _id: new ObjectId(user.cityId) },
+      });
+
+      return city ? [CityResult.fromEntity(city)] : [];
     }
 
     if (user.type !== UserType.SUPERADMIN) {
@@ -94,12 +74,14 @@ export class CityService {
       );
     }
 
-    return this.getCachedCities();
+    const cities = await this.cityRepository.find({
+      order: { name: 'ASC' },
+    });
+    return cities.map(CityResult.fromEntity);
   }
 
   async createCity(data: CreateCityDto): Promise<CityResult> {
     const city = await this.cityRepository.save({
-      id: uuid(),
       name: data.name,
       state: data.state,
       clientWhatsappMessage: data.clientWhatsappMessage?.trim() || '',
@@ -112,14 +94,12 @@ export class CityService {
       whatsappCloudToken: data.whatsappCloudToken?.trim() || '',
     });
 
-    this.invalidateCache();
-
     return CityResult.fromEntity(city);
   }
 
   async findCity(cityId: string, user: UserRequest): Promise<CityResult> {
     const city = await this.cityRepository.findOne({
-      where: { id: cityId },
+      where: { _id: new ObjectId(cityId) },
     });
 
     if (!city) {
@@ -137,7 +117,7 @@ export class CityService {
     user: UserRequest,
   ): Promise<CityResult> {
     const city = await this.cityRepository.findOne({
-      where: { id: cityId },
+      where: { _id: new ObjectId(cityId) },
     });
 
     if (!city) {
@@ -180,14 +160,12 @@ export class CityService {
           : city.whatsappCloudToken,
     });
 
-    this.invalidateCache();
-
     return CityResult.fromEntity(updatedCity);
   }
 
   async deleteCity(cityId: string): Promise<void> {
     const city = await this.cityRepository.findOne({
-      where: { id: cityId },
+      where: { _id: new ObjectId(cityId) },
     });
 
     if (!city) {
@@ -195,6 +173,5 @@ export class CityService {
     }
 
     await this.cityRepository.delete(city.id);
-    this.invalidateCache();
   }
 }

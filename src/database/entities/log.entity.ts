@@ -1,20 +1,21 @@
+import { ObjectId } from 'mongodb';
 import {
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  ObjectIdColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { UserEntity } from './user.entity';
 
 @Entity()
-@Index('IDX_LOG_LOGICAL_ID', ['id'], { unique: true })
 export class LogEntity {
-  @PrimaryGeneratedColumn('uuid')
-  internalId: string;
+  @ObjectIdColumn()
+  internalId: ObjectId;
 
-  @Column({ type: 'varchar', length: 64 })
+  @Column('uuid')
+  @Index({ unique: true })
   id: string;
 
   @Column()
@@ -23,18 +24,18 @@ export class LogEntity {
   @Column()
   type: string;
 
-  @Column({ type: 'text' })
+  @Column()
   error: string;
 
-  @Column({ type: 'jsonb' })
+  @Column({ unique: false })
   user: UserEntity;
 
   @Column()
   status: string;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn()
   createdAt: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz' })
+  @UpdateDateColumn()
   updatedAt: Date;
 }

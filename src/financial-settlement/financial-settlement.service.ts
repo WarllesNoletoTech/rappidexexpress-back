@@ -1,4 +1,3 @@
-import { PostgresCompatRepository } from '../database/postgres-compat.repository';
 import {
   BadRequestException,
   Injectable,
@@ -6,6 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ObjectId } from 'mongodb';
+import { MongoRepository } from 'typeorm';
 
 import {
   CityEntity,
@@ -50,13 +51,13 @@ export class FinancialSettlementService {
 
   constructor(
     @InjectRepository(DeliveryEntity)
-    private readonly deliveryRepository: PostgresCompatRepository<DeliveryEntity>,
+    private readonly deliveryRepository: MongoRepository<DeliveryEntity>,
     @InjectRepository(UserEntity)
-    private readonly userRepository: PostgresCompatRepository<UserEntity>,
+    private readonly userRepository: MongoRepository<UserEntity>,
     @InjectRepository(CityEntity)
-    private readonly cityRepository: PostgresCompatRepository<CityEntity>,
+    private readonly cityRepository: MongoRepository<CityEntity>,
     @InjectRepository(FinancialSettlementHistoryEntity)
-    private readonly historyRepository: PostgresCompatRepository<FinancialSettlementHistoryEntity>,
+    private readonly historyRepository: MongoRepository<FinancialSettlementHistoryEntity>,
   ) {}
 
   async generatePdf(query: FinancialSettlementQueryDto) {
@@ -77,7 +78,7 @@ export class FinancialSettlementService {
 
     if (!settlement.whatsapp) {
       throw new BadRequestException(
-        'Este lojista não possui WhatsApp cadastrado no perfil.',
+        'Cadastre o número do gerente para enviar o relatório.',
       );
     }
 
@@ -86,7 +87,7 @@ export class FinancialSettlementService {
     await this.historyRepository.save({
       establishmentId: settlement.establishment.id,
       establishmentName: settlement.establishmentName,
-      cityId: String(settlement.city.id),
+      cityId: settlement.city.id?.toHexString?.() ?? `${settlement.city.id}`,
       cityName: this.formatCity(settlement.city),
       periodStart: settlement.periodStart,
       periodEnd: settlement.periodEnd,
@@ -134,7 +135,10 @@ export class FinancialSettlementService {
       throw new NotFoundException('Lojista não encontrado.');
     }
 
-    const whatsapp = this.normalizeWhatsapp(establishment.phone);
+    const whatsapp = this.normalizeWhatsapp(establishment.managerWhatsapp);
+    const includeMonthlyFee = this.shouldIncludeMonthlyFee(
+      query.includeMonthlyFee,
+    );
 
     const deliveries = await this.deliveryRepository.find({
       where: {
@@ -149,9 +153,9 @@ export class FinancialSettlementService {
       order: { createdAt: 'ASC' },
     });
 
-    if (!deliveries.length) {
+    if (!deliveries.length && !includeMonthlyFee) {
       throw new BadRequestException(
-        'Nenhuma entrega encontrada para este período.',
+        'Não existem entregas nesse período para gerar o relatório.',
       );
     }
 
@@ -163,7 +167,7 @@ export class FinancialSettlementService {
     }
 
     const deliveryFeeValue = this.getDeliveryFeeValue(city);
-    if (!deliveryFeeValue) {
+    if (deliveries.length && !deliveryFeeValue) {
       throw new BadRequestException(
         'Valor da entrega não configurado para esta cidade.',
       );
@@ -176,9 +180,6 @@ export class FinancialSettlementService {
       );
     }
 
-    const includeMonthlyFee = this.shouldIncludeMonthlyFee(
-      query.includeMonthlyFee,
-    );
     const monthlyFeeValue = includeMonthlyFee
       ? this.getMonthlyFeeValue(city)
       : 0;
@@ -224,10 +225,10 @@ export class FinancialSettlementService {
   }
 
   private async resolveCity(
-    delivery: DeliveryEntity,
+    delivery: DeliveryEntity | undefined,
     establishment: UserEntity,
   ) {
-    const deliveryCityId = String((delivery as any).cityId ?? '').trim();
+    const deliveryCityId = String((delivery as any)?.cityId ?? '').trim();
     if (deliveryCityId) {
       const byDelivery = await this.findCityById(deliveryCityId);
       if (byDelivery) return byDelivery;
@@ -238,7 +239,7 @@ export class FinancialSettlementService {
       if (byEstablishment) return byEstablishment;
     }
 
-    if (delivery.addressCity) {
+    if (delivery?.addressCity) {
       const where: Record<string, any> = {
         name: new RegExp(`^${this.escapeRegExp(delivery.addressCity)}$`, 'i'),
       };
@@ -257,7 +258,7 @@ export class FinancialSettlementService {
   private async findCityById(cityId: string) {
     try {
       return await this.cityRepository.findOne({
-        where: { id: cityId },
+        where: { _id: new ObjectId(cityId) },
       });
     } catch {
       return null;
@@ -443,7 +444,7 @@ export class FinancialSettlementService {
         'F2',
       );
       text(
-        `WhatsApp: ${settlement.whatsapp ? this.formatPhone(settlement.whatsapp) : 'Não cadastrado'}`,
+        `WhatsApp do gerente: ${settlement.whatsapp ? this.formatPhone(settlement.whatsapp) : 'Não cadastrado'}`,
         48,
         690,
       );
@@ -639,7 +640,7 @@ export class FinancialSettlementService {
       JSON.stringify({
         message:
           'Preparando fechamento financeiro para envio manual pelo WhatsApp',
-        cityId: String(settlement.city.id),
+        cityId: settlement.city.id?.toHexString?.() ?? `${settlement.city.id}`,
         cityName: this.formatCity(settlement.city),
         destinationPhone: settlement.whatsapp,
         hasPdf: Boolean(pdfBuffer?.length),

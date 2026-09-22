@@ -16,6 +16,9 @@ export class UserResult {
   phone: string;
 
   @Expose()
+  managerWhatsapp?: string;
+
+  @Expose()
   user: string;
 
   @Expose()

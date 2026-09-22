@@ -1,100 +1,75 @@
-/* eslint-disable no-console */
-const { Client } = require('pg');
+const { MongoClient } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const { randomUUID } = require('crypto');
 
-function required(name) {
-  const value = String(process.env[name] || '').trim();
-  if (!value) throw new Error(`${name} não configurada.`);
-  return value;
-}
+const MONGODB_URI =
+  process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/rappidexexpress';
 
 async function main() {
-  const connectionString = required('DATABASE_URL');
-  const adminUser = String(process.env.ADMIN_USER || 'admin').trim();
-  const adminPassword = required('ADMIN_PASSWORD');
-  const adminName = String(process.env.ADMIN_NAME || 'Administrador').trim();
-  const adminPhone = String(process.env.ADMIN_PHONE || '00000000000').trim();
-  const cityName = String(process.env.ADMIN_CITY_NAME || 'Redenção').trim();
-  const cityState = String(process.env.ADMIN_CITY_STATE || 'PA').trim();
+  const client = new MongoClient(MONGODB_URI);
 
-  const pg = new Client({
-    connectionString,
-    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-  });
-
-  await pg.connect();
   try {
-    await pg.query('BEGIN');
+    await client.connect();
+    const db = client.db();
 
-    let city = await pg.query(
-      'SELECT "id" FROM "city_entity" WHERE "name" = $1 AND "state" = $2 LIMIT 1',
-      [cityName, cityState],
-    );
+    const usersCollection = db.collection('user_entity');
+    const citiesCollection = db.collection('city_entity');
 
-    let cityId;
-    if (city.rowCount) {
-      cityId = city.rows[0].id;
-    } else {
-      cityId = randomUUID();
-      await pg.query(
-        'INSERT INTO "city_entity" ("id", "name", "state") VALUES ($1, $2, $3)',
-        [cityId, cityName, cityState],
-      );
+    let city = await citiesCollection.findOne({
+      name: 'Redenção',
+      state: 'PA',
+    });
+
+    if (!city) {
+      const cityResult = await citiesCollection.insertOne({
+        name: 'Redenção',
+        state: 'PA',
+      });
+
+      city = await citiesCollection.findOne({ _id: cityResult.insertedId });
     }
 
-    const existing = await pg.query(
-      'SELECT "id" FROM "user_entity" WHERE "user" = $1 LIMIT 1',
-      [adminUser],
-    );
+    const existing = await usersCollection.findOne({ user: 'admin' });
 
-    if (existing.rowCount) {
-      await pg.query('ROLLBACK');
-      console.log(`O usuário ${adminUser} já existe. Nenhuma senha foi alterada.`);
+    if (existing) {
+      console.log('Já existe um usuário admin.');
+      console.log('Login: admin');
+      console.log('Senha: 123456');
       return;
     }
 
-    const passwordHash = await bcrypt.hash(adminPassword, 10);
-    const now = new Date();
+    const passwordHash = await bcrypt.hash('123456', 10);
 
-    await pg.query(
-      `INSERT INTO "user_entity" (
-        "id", "name", "phone", "user", "password", "profileImage", "location",
-        "type", "permission", "pix", "cityId", "isActive", "blocked",
-        "blockedBySystem", "notification", "token", "useIfoodIntegration",
-        "usesExternalIfoodPdv", "ifoodWithoutPreparationTime", "ifoodOrdersReleased",
-        "ifoodOrdersUsed", "ifoodOrdersAvailable", "createdAt", "createdBy", "updatedAt"
-      ) VALUES (
-        $1,$2,$3,$4,$5,'','',
-        'superadmin','superadmin','',$6,true,false,
-        false,$7::jsonb,'',false,
-        false,false,0,
-        0,0,$8,'create-admin-script',$8
-      )`,
-      [
-        randomUUID(),
-        adminName,
-        adminPhone,
-        adminUser,
-        passwordHash,
-        cityId,
-        JSON.stringify({ subscriptionId: '' }),
-        now,
-      ],
-    );
+    await usersCollection.insertOne({
+      id: randomUUID(),
+      name: 'Administrador',
+      phone: '94999999999',
+      user: 'admin',
+      password: passwordHash,
+      profileImage: '',
+      location: '',
+      type: 'superadmin',
+      permission: 'superadmin',
+      pix: '',
+      cityId: String(city._id),
+      isActive: true,
+      notification: {
+        subscriptionId: '',
+      },
+      token: '',
+      createdAt: new Date(),
+      createdBy: 'create-admin-script',
+      updatedAt: new Date(),
+    });
 
-    await pg.query('COMMIT');
-    console.log(`Administrador criado com sucesso. Login: ${adminUser}`);
-    console.log('A senha não é exibida por segurança.');
+    console.log('Admin criado com sucesso!');
+    console.log('Login: admin');
+    console.log('Senha: 123456');
   } catch (error) {
-    await pg.query('ROLLBACK').catch(() => undefined);
-    throw error;
+    console.error('Erro ao criar admin:', error);
   } finally {
-    await pg.end();
+    await client.close();
   }
 }
 
-main().catch((error) => {
-  console.error('Erro ao criar admin:', error.message || error);
-  process.exitCode = 1;
-});
+main();

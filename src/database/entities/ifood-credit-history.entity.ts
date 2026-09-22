@@ -1,38 +1,32 @@
-import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
-
-const bigintNumberTransformer = {
-  to: (value?: number | string | null) => value ?? 0,
-  from: (value?: number | string | null) => Number(value ?? 0),
-};
+import { ObjectId } from 'mongodb';
+import { Column, Entity, ObjectIdColumn } from 'typeorm';
 
 export type IfoodCreditOperationType = 'ADD' | 'REMOVE' | 'CONSUME' | 'REFUND';
 
 @Entity()
-@Index('IDX_IFOOD_CREDIT_LOGICAL_ID', ['id'], { unique: true })
-@Index('IDX_IFOOD_CREDIT_COMPANY_CREATED', ['companyId', 'createdAt'])
 export class IfoodCreditHistoryEntity {
-  @PrimaryGeneratedColumn('uuid')
-  internalId: string;
+  @ObjectIdColumn()
+  internalId: ObjectId;
 
-  @Column({ type: 'varchar', length: 64 })
+  @Column('uuid')
   id: string;
 
-  @Column({ type: 'varchar', length: 64 })
+  @Column()
   companyId: string;
 
-  @Column({ type: 'varchar' })
+  @Column()
   operationType: IfoodCreditOperationType;
 
-  @Column({ type: 'numeric', transformer: bigintNumberTransformer })
+  @Column()
   amount: number;
 
-  @Column({ type: 'numeric', transformer: bigintNumberTransformer })
+  @Column()
   releasedAfterOperation: number;
 
-  @Column({ type: 'numeric', transformer: bigintNumberTransformer })
+  @Column()
   usedAfterOperation: number;
 
-  @Column({ type: 'numeric', transformer: bigintNumberTransformer })
+  @Column()
   availableAfterOperation: number;
 
   @Column({ nullable: true })
@@ -41,9 +35,9 @@ export class IfoodCreditHistoryEntity {
   @Column({ nullable: true })
   orderId?: string;
 
-  @Column({ nullable: true, type: 'text' })
+  @Column({ nullable: true })
   reason?: string;
 
-  @Column({ type: 'timestamptz' })
+  @Column()
   createdAt: Date;
 }
