@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { PostgresCompatRepository } from '../database/postgres-compat.repository';
+import { MongoRepository } from 'typeorm';
 import { DeliveryEntity } from '../database/entities';
 import { StatusDelivery } from '../shared/constants/enums.constants';
 
@@ -33,7 +33,7 @@ export class MenuFlowStatusSyncService
 
   constructor(
     @InjectRepository(DeliveryEntity)
-    private readonly deliveries: PostgresCompatRepository<DeliveryEntity>,
+    private readonly deliveries: MongoRepository<DeliveryEntity>,
     private readonly config: ConfigService,
   ) {}
 
