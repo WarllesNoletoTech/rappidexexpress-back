@@ -39,6 +39,18 @@ export class IfoodOrderLinkService implements OnModuleInit {
         error?.stack,
       );
     }
+
+    try {
+      await this.ifoodOrderLinkRepository.createCollectionIndex(
+        { deliveryId: 1 },
+        {},
+      );
+      this.logger.log('Índice MongoDB garantido em ifood_order_link: deliveryId');
+    } catch (error: any) {
+      this.logger.warn(
+        `Não foi possível garantir o índice deliveryId em ifood_order_link: ${error?.message || error}`,
+      );
+    }
   }
 
   async findByIfoodOrderId(ifoodOrderId: string, merchantId?: string | null) {

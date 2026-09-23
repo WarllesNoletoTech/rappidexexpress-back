@@ -1,14 +1,30 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MongoRepository } from 'typeorm';
 import { IfoodEventEntity } from '../database/entities';
 
 @Injectable()
-export class IfoodEventService {
+export class IfoodEventService implements OnModuleInit {
+  private readonly logger = new Logger(IfoodEventService.name);
+
   constructor(
     @InjectRepository(IfoodEventEntity)
     private readonly ifoodEventRepository: MongoRepository<IfoodEventEntity>,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.ifoodEventRepository.createCollectionIndex(
+        { acknowledged: 1 },
+        {},
+      );
+      this.logger.log('Índice MongoDB garantido em ifood_event: acknowledged');
+    } catch (error: any) {
+      this.logger.warn(
+        `Não foi possível garantir o índice acknowledged em ifood_event: ${error?.message || error}`,
+      );
+    }
+  }
 
   async findByEventId(eventId: string) {
     return this.ifoodEventRepository.findOneBy({ eventId });

@@ -557,49 +557,138 @@ export class UserService {
                 motoboy.cityId.toString() === requesterCityId?.toString(),
             );
 
-      const motoboysWithDeliveriesCount = await Promise.all(
-        scopedMotoboys.map(async (motoboy) => {
-          const countWhere = {
-            isActive: true,
-            'motoboy.id': motoboy.id,
-            status: {
-              $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
-            },
-          };
+      let motoboysWithDeliveriesCount: MotoboyDeliverySummary[];
 
-          const lastDeliveryWhere = {
-            'motoboy.id': motoboy.id,
-            status: StatusDelivery.FINISHED,
-          };
-          if (requesterCityId) {
-            countWhere['establishment.cityId'] = requesterCityId;
-            lastDeliveryWhere['establishment.cityId'] = requesterCityId;
-          }
-
-          const countDeliveries =
-            await this.deliveryRepository.count(countWhere);
-
-          const order = { finishedAt: 'DESC' };
-          const take = 1;
-
-          const lastDelivery = await this.deliveryRepository.find({
-            where: lastDeliveryWhere,
-            order,
-            take,
-          });
-
-          return {
-            name: `${motoboy.name} - ${countDeliveries}`,
-            lastDeliveryDate: lastDelivery,
-            id: motoboy.id,
-          };
-        }),
-      );
+      try {
+        motoboysWithDeliveriesCount =
+          await this.buildMotoboyDeliverySummariesOptimized(
+            scopedMotoboys,
+            requesterCityId,
+          );
+      } catch (optimizationError: any) {
+        this.logger.warn(
+          `Agregação otimizada de motoboys falhou; usando consulta legada sem interromper o painel. ${optimizationError?.message || optimizationError}`,
+        );
+        motoboysWithDeliveriesCount =
+          await this.buildMotoboyDeliverySummariesLegacy(
+            scopedMotoboys,
+            requesterCityId,
+          );
+      }
 
       return await this.changeNameForMotoboy(motoboysWithDeliveriesCount);
     } catch (error) {
       throw error;
     }
+  }
+
+  private async buildMotoboyDeliverySummariesOptimized(
+    motoboys: UserEntity[],
+    requesterCityId?: string,
+  ): Promise<MotoboyDeliverySummary[]> {
+    const motoboyIds = motoboys.map((motoboy) => motoboy.id).filter(Boolean);
+
+    if (motoboyIds.length === 0) {
+      return [];
+    }
+
+    const activeMatch: Record<string, any> = {
+      isActive: true,
+      'motoboy.id': { $in: motoboyIds },
+      status: {
+        $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
+      },
+    };
+
+    if (requesterCityId) {
+      activeMatch['establishment.cityId'] = requesterCityId;
+    }
+
+    const activeCounts = await this.deliveryRepository
+      .aggregate([
+        { $match: activeMatch },
+        {
+          $group: {
+            _id: '$motoboy.id',
+            count: { $sum: 1 },
+          },
+        },
+      ] as any)
+      .toArray();
+
+    const activeCountByMotoboyId = new Map<string, number>();
+    for (const item of activeCounts || []) {
+      activeCountByMotoboyId.set(
+        String(item?._id || ''),
+        Number(item?.count) || 0,
+      );
+    }
+
+    return Promise.all(
+      motoboys.map(async (motoboy) => {
+        const lastDeliveryWhere: Record<string, any> = {
+          'motoboy.id': motoboy.id,
+          status: StatusDelivery.FINISHED,
+        };
+
+        if (requesterCityId) {
+          lastDeliveryWhere['establishment.cityId'] = requesterCityId;
+        }
+
+        const lastDelivery = await this.deliveryRepository.find({
+          where: lastDeliveryWhere,
+          order: { finishedAt: 'DESC' },
+          take: 1,
+          select: { finishedAt: true } as any,
+        });
+
+        return {
+          name: `${motoboy.name} - ${activeCountByMotoboyId.get(motoboy.id) || 0}`,
+          lastDeliveryDate: lastDelivery,
+          id: motoboy.id,
+        };
+      }),
+    );
+  }
+
+  private async buildMotoboyDeliverySummariesLegacy(
+    motoboys: UserEntity[],
+    requesterCityId?: string,
+  ): Promise<MotoboyDeliverySummary[]> {
+    return Promise.all(
+      motoboys.map(async (motoboy) => {
+        const countWhere: Record<string, any> = {
+          isActive: true,
+          'motoboy.id': motoboy.id,
+          status: {
+            $nin: [StatusDelivery.FINISHED, StatusDelivery.CANCELED],
+          },
+        };
+
+        const lastDeliveryWhere: Record<string, any> = {
+          'motoboy.id': motoboy.id,
+          status: StatusDelivery.FINISHED,
+        };
+
+        if (requesterCityId) {
+          countWhere['establishment.cityId'] = requesterCityId;
+          lastDeliveryWhere['establishment.cityId'] = requesterCityId;
+        }
+
+        const countDeliveries = await this.deliveryRepository.count(countWhere);
+        const lastDelivery = await this.deliveryRepository.find({
+          where: lastDeliveryWhere,
+          order: { finishedAt: 'DESC' },
+          take: 1,
+        });
+
+        return {
+          name: `${motoboy.name} - ${countDeliveries}`,
+          lastDeliveryDate: lastDelivery,
+          id: motoboy.id,
+        };
+      }),
+    );
   }
 
   async changeNameForMotoboy(

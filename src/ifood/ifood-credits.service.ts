@@ -2,7 +2,9 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { addHours } from 'date-fns';
@@ -16,13 +18,31 @@ import { UserType } from '../shared/constants/enums.constants';
 import { UserRequest } from '../shared/interfaces';
 
 @Injectable()
-export class IfoodCreditsService {
+export class IfoodCreditsService implements OnModuleInit {
+  private readonly logger = new Logger(IfoodCreditsService.name);
+
   constructor(
     @InjectRepository(UserEntity)
     private readonly userRepository: MongoRepository<UserEntity>,
     @InjectRepository(IfoodCreditHistoryEntity)
     private readonly creditHistoryRepository: MongoRepository<IfoodCreditHistoryEntity>,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.creditHistoryRepository.createCollectionIndex(
+        { companyId: 1, operationType: 1, orderId: 1 },
+        {},
+      );
+      this.logger.log(
+        'Índice MongoDB garantido em ifood_credit_history: companyId/operationType/orderId',
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `Não foi possível garantir o índice de histórico de créditos iFood: ${error?.message || error}`,
+      );
+    }
+  }
 
   private async findCompanyOrFail(companyId: string) {
     const company = await this.userRepository.findOneBy({ id: companyId });

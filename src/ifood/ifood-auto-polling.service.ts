@@ -26,7 +26,8 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
   private metrics = {
     eventsReceived: 0,
     eventsAcked: 0,
-    pollingToAckMs: [] as number[],
+    pollingToAckMsTotal: 0,
+    pollingToAckSamples: 0,
     errors429: 0,
     errors403: 0,
     errors400: 0,
@@ -160,7 +161,8 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
       if (polledAckTargets.length > 0) {
         await this.ackWithDeadlineAndFallback(polledAckTargets);
         this.metrics.eventsAcked += polledEventIds.length;
-        this.metrics.pollingToAckMs.push(Date.now() - cycleStartedAt);
+        this.metrics.pollingToAckMsTotal += Date.now() - cycleStartedAt;
+        this.metrics.pollingToAckSamples += 1;
 
         for (const eventId of polledEventIds) {
           await this.ifoodEventService.markAsAcknowledged(eventId);
@@ -395,10 +397,10 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
 
   private logObservabilitySnapshot() {
     const avgPollingToAckMs =
-      this.metrics.pollingToAckMs.length > 0
+      this.metrics.pollingToAckSamples > 0
         ? Math.round(
-            this.metrics.pollingToAckMs.reduce((sum, value) => sum + value, 0) /
-              this.metrics.pollingToAckMs.length,
+            this.metrics.pollingToAckMsTotal /
+              this.metrics.pollingToAckSamples,
           )
         : 0;
     const ackRatio = this.metrics.eventsReceived

@@ -723,6 +723,33 @@ export class DeliveryService implements OnModuleInit {
         options: { name: 'IDX_DELIVERIES_ACTIVE_MOTOBOY_STATUS_CREATED_AT' },
       },
       {
+        keys: { menuFlowSyncPending: 1, source: 1 },
+        options: {},
+      },
+      {
+        keys: {
+          'establishment.cityId': 1,
+          'motoboy.id': 1,
+          status: 1,
+          finishedAt: 1,
+        },
+        options: {},
+      },
+      {
+        keys: { menuFlowOrderId: 1 },
+        options: {},
+      },
+      {
+        keys: {
+          'establishment.cityId': 1,
+          'establishment.id': 1,
+          isActive: 1,
+          createdAt: 1,
+          status: 1,
+        },
+        options: {},
+      },
+      {
         keys: { ifoodOrderId: 1, ifoodMerchantId: 1 },
         options: {
           name: 'IDX_DELIVERIES_IFOOD_ORDER_MERCHANT_UNIQUE',
@@ -741,12 +768,14 @@ export class DeliveryService implements OnModuleInit {
           index.keys,
           index.options,
         );
-        this.logger.log(
-          `Índice MongoDB garantido em delivery: ${index.options.name}`,
-        );
+        const indexLabel =
+          (index.options as any)?.name || JSON.stringify(index.keys);
+        this.logger.log(`Índice MongoDB garantido em delivery: ${indexLabel}`);
       } catch (error: any) {
+        const indexLabel =
+          (index.options as any)?.name || JSON.stringify(index.keys);
         this.logger.error(
-          `Falha ao garantir índice MongoDB em delivery: ${index.options.name}. keys=${JSON.stringify(index.keys)} unique=${Boolean((index.options as any).unique)} code=${error?.code || 'N/A'} codeName=${error?.codeName || 'N/A'} message=${error?.message || error}. Rode npm run diagnose:mongo no Heroku para localizar documentos duplicados/incompatíveis.`,
+          `Falha ao garantir índice MongoDB em delivery: ${indexLabel}. keys=${JSON.stringify(index.keys)} unique=${Boolean((index.options as any).unique)} code=${error?.code || 'N/A'} codeName=${error?.codeName || 'N/A'} message=${error?.message || error}. Rode npm run diagnose:mongo no Heroku para localizar documentos duplicados/incompatíveis.`,
           error?.stack,
         );
       }
@@ -873,7 +902,6 @@ export class DeliveryService implements OnModuleInit {
     const shouldIncludeDashboardCounts = this.parseBooleanQuery(
       queryParams.includeDashboardCounts,
     );
-
     const dashboardCountsPromise = shouldIncludeDashboardCounts
       ? this.getDashboardCountsByUser(userForRequest, queryParams)
       : Promise.resolve(undefined);
@@ -915,7 +943,7 @@ export class DeliveryService implements OnModuleInit {
     this.logger.log(
       `GET /api/delivery performance userId=${userForRequest.id} userType=${userForRequest.type} filters=${JSON.stringify(
         queryParams,
-      )} returned=${deliveries.length} total=${count} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
+      )} returned=${deliveries.length} total=${shouldIncludeTotal ? count : 'skipped'} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
     );
 
     return ListDeliverysResult.fromEntities(
