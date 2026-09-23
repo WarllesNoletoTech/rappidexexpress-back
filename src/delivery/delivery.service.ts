@@ -943,7 +943,7 @@ export class DeliveryService implements OnModuleInit {
     this.logger.log(
       `GET /api/delivery performance userId=${userForRequest.id} userType=${userForRequest.type} filters=${JSON.stringify(
         queryParams,
-      )} returned=${deliveries.length} total=${shouldIncludeTotal ? count : 'skipped'} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
+      )} returned=${deliveries.length} total=${count} dbQueryMs=${queryDurationMs} totalMs=${totalDurationMs}`,
     );
 
     return ListDeliverysResult.fromEntities(
