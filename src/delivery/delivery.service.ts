@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   forwardRef,
   ForbiddenException,
   Inject,
@@ -638,7 +639,7 @@ export class DeliveryService implements OnModuleInit {
         .trim()
         .toUpperCase();
 
-      const isConcluded = [
+      const isConcluded = orderStatus === 'CON' || [
         'CONCLUDED',
         'COMPLETED',
         'DELIVERED',
@@ -2010,6 +2011,125 @@ export class DeliveryService implements OnModuleInit {
     );
   }
 
+  /**
+   * Conclusão administrativa de uma entrega iFood cuja confirmação já ocorreu
+   * no iFood, mas o código não foi registrado no Rappidex.
+   * Não chama verifyDeliveryCode nem envia eventos de status ao iFood.
+   */
+  async finishIfoodDeliveryAdministratively(
+    deliveryId: string,
+    user: UserRequest,
+  ): Promise<DeliveryResult> {
+    const admin = await this.findOneUserById(user.id);
+    if (admin.type !== UserType.SUPERADMIN) {
+      throw new ForbiddenException('Somente o super admin pode executar esta operação.');
+    }
+
+    const delivery = await this.deliveryRepository.findOne({
+      where: { id: deliveryId, isActive: true } as any,
+      relations: { establishment: true, motoboy: true },
+    });
+    if (!delivery) {
+      throw new BadRequestException('Entrega ativa não encontrada.');
+    }
+    this.ensureCityAccess(
+      admin,
+      delivery.establishment?.cityId ?? admin.cityId,
+    );
+
+    if (delivery.status === StatusDelivery.FINISHED) {
+      return DeliveryResult.fromEntity(delivery);
+    }
+    if (delivery.status !== StatusDelivery.AWAITING_CODE) {
+      throw new BadRequestException(
+        'Esta ação é permitida apenas para entregas iFood aguardando código.',
+      );
+    }
+
+    const link = await this.ifoodOrderLinkService.findByDeliveryId(deliveryId);
+    const ifoodOrderId = String(link?.ifoodOrderId || '').trim();
+    const merchantId = String(link?.merchantId || '').trim();
+    if (!ifoodOrderId || !merchantId) {
+      throw new BadRequestException(
+        'Não foi encontrado vínculo iFood válido para esta entrega.',
+      );
+    }
+
+    // Consulta de leitura: não altera o pedido no iFood.
+    const ifoodResult = await this.getIfoodConclusionStatus(
+      ifoodOrderId,
+      merchantId,
+    );
+    if (!ifoodResult.isConcluded) {
+      throw new BadRequestException(
+        `Finalização não autorizada: iFood não confirmou conclusão (status: ${ifoodResult.status}).`,
+      );
+    }
+
+    const finishedAt = addHours(new Date(), -3);
+    // Compare-and-set impede finalizações concorrentes e cobranças repetidas.
+    const result = await this.deliveryRepository.updateOne(
+      {
+        id: deliveryId,
+        isActive: true,
+        status: StatusDelivery.AWAITING_CODE,
+      } as any,
+      {
+        $set: {
+          status: StatusDelivery.FINISHED,
+          finishedAt,
+          updatedAt: finishedAt,
+          manualFinishedById: admin.id,
+          manualFinishedAt: finishedAt,
+          manualFinishedReason: 'iFood já concluído; código indisponível',
+          manualFinishedIfoodStatus: ifoodResult.status,
+        },
+      } as any,
+    );
+
+    if (!result?.modifiedCount) {
+      const current = await this.deliveryRepository.findOneByOrFail({ id: deliveryId });
+      if (current.status === StatusDelivery.FINISHED) {
+        return DeliveryResult.fromEntity(current);
+      }
+      throw new ConflictException(
+        'O status da entrega mudou durante a confirmação. Atualize o painel.',
+      );
+    }
+
+    const updated = await this.deliveryRepository.findOne({
+      where: { id: deliveryId },
+      relations: { establishment: true, motoboy: true },
+    });
+    if (!updated) {
+      throw new InternalServerErrorException('Entrega atualizada, mas não recuperada.');
+    }
+
+    try {
+      await this.logRepository.save({
+        id: uuid(),
+        where: `Finalização administrativa da entrega ${deliveryId}`,
+        type: 'FINALIZACAO_MANUAL_IFOOD',
+        error: 'Sem erro',
+        user: admin,
+        status: `Finalizado após consulta iFood: ${ifoodResult.status}`,
+      });
+    } catch (error: any) {
+      this.logger.error(
+        `Entrega ${deliveryId} finalizada, mas falhou a gravação do log auxiliar: ${error?.message || error}`,
+      );
+    }
+
+    this.ordersGateway.emitDeliveryUpdated(
+      DeliveryResult.fromEntity(updated),
+      updated.establishment?.cityId,
+    );
+    this.logger.warn(
+      `Finalização administrativa iFood: deliveryId=${deliveryId} adminId=${admin.id} statusIfood=${ifoodResult.status}. Sem envio de evento ao iFood.`,
+    );
+    return DeliveryResult.fromEntity(updated);
+  }
+
   async finishDeliveryFromIfood(orderId: string, event?: any) {
     const ifoodLink =
       await this.ifoodOrderLinkService.findByIfoodOrderId(orderId);
@@ -2329,6 +2449,10 @@ export class DeliveryService implements OnModuleInit {
       releasedAt: data.releasedAt ?? null,
       releasedBy: data.releasedBy ?? null,
       finishedAt: data.finishedAt ?? null,
+      manualFinishedById: data.manualFinishedById ?? null,
+      manualFinishedAt: data.manualFinishedAt ?? null,
+      manualFinishedReason: data.manualFinishedReason ?? null,
+      manualFinishedIfoodStatus: data.manualFinishedIfoodStatus ?? null,
       ifoodAssignDriverSynced: data.ifoodAssignDriverSynced ?? false,
       ifoodGoingToOriginSynced: data.ifoodGoingToOriginSynced ?? false,
       ifoodArrivedAtOriginSynced: data.ifoodArrivedAtOriginSynced ?? false,

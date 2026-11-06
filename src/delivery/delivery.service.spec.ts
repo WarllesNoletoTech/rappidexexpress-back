@@ -121,6 +121,89 @@ describe('DeliveryService', () => {
     deliveryRepository = module.get(getRepositoryToken(DeliveryEntity));
   });
 
+  describe('finalização administrativa de pedido iFood já concluído', () => {
+    const superAdmin = { id: 'superadmin-1', type: UserType.SUPERADMIN, cityId: 'city-1' };
+    const delivery = {
+      id: 'delivery-1',
+      status: StatusDelivery.AWAITING_CODE,
+      isActive: true,
+      establishment: { id: 'shop-1', cityId: 'city-1' },
+      motoboy: { id: 'motoboy-1' },
+    };
+
+    it('conclui localmente somente com status CON no iFood, sem enviar finalização ao iFood', async () => {
+      userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne
+        .mockResolvedValueOnce(delivery)
+        .mockResolvedValueOnce({ ...delivery, status: StatusDelivery.FINISHED });
+      deliveryRepository.updateOne.mockResolvedValue({ modifiedCount: 1 });
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
+      });
+      ifoodOrdersService.getOrderDetails.mockResolvedValue({ orderStatus: 'CON' });
+
+      const result = await service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      );
+
+      expect(result.status).toBe(StatusDelivery.FINISHED);
+      expect(deliveryRepository.updateOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'delivery-1', status: StatusDelivery.AWAITING_CODE,
+        }),
+        expect.objectContaining({
+          $set: expect.objectContaining({ status: StatusDelivery.FINISHED }),
+        }),
+      );
+      expect(ifoodOrdersService.verifyDeliveryCode).not.toHaveBeenCalled();
+      expect(ifoodOrdersService.dispatchOrder).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia se o iFood ainda não confirmou a conclusão', async () => {
+      userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne.mockResolvedValue(delivery);
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
+      });
+      ifoodOrdersService.getOrderDetails.mockResolvedValue({ orderStatus: 'DISPATCHED' });
+
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      )).rejects.toThrow('iFood não confirmou conclusão');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia administrador comum, mesmo com acesso à cidade', async () => {
+      userRepository.findOneBy.mockResolvedValue({
+        id: 'admin-1', type: UserType.ADMIN, cityId: 'city-1',
+      });
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: 'admin-1', type: UserType.ADMIN } as any,
+      )).rejects.toThrow('Somente o super admin');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('não confia no perfil informado no token quando o banco identifica ADMIN', async () => {
+      userRepository.findOneBy.mockResolvedValue({
+        id: 'admin-1', type: UserType.ADMIN, cityId: 'city-1',
+      });
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: 'admin-1', type: UserType.SUPERADMIN } as any,
+      )).rejects.toThrow('Somente o super admin');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia lojista e demais perfis', async () => {
+      userRepository.findOneBy.mockResolvedValue({
+        id: 'shop-1', type: UserType.SHOPKEEPER, cityId: 'city-1',
+      });
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: 'shop-1', type: UserType.SHOPKEEPER } as any,
+      )).rejects.toThrow('Somente o super admin');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+  });
+
   it('should be defined', () => {
     expect(service).toBeDefined();
   });

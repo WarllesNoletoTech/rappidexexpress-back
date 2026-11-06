@@ -149,6 +149,18 @@ export class DeliveryEntity {
   @Column()
   finishedAt: Date;
 
+  @Column({ nullable: true })
+  manualFinishedById?: string;
+
+  @Column({ nullable: true })
+  manualFinishedAt?: Date;
+
+  @Column({ nullable: true })
+  manualFinishedReason?: string;
+
+  @Column({ nullable: true })
+  manualFinishedIfoodStatus?: string;
+
   @Column({ default: false })
   ifoodAssignDriverSynced?: boolean;
 

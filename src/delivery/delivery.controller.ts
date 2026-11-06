@@ -9,6 +9,7 @@ import {
   Put,
   Query,
   UnauthorizedException,
+  ForbiddenException,
   UseGuards,
   Logger,
   InternalServerErrorException,
@@ -19,6 +20,7 @@ import { ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../authenticator/guards/jwt-auth.guard';
 import { User } from '../shared/decorators';
 import { UserRequest } from '../shared/interfaces';
+import { UserType } from '../shared/constants/enums.constants';
 import {
   onlyForAdmin,
   onlyForShopkeeperOrAdmin,
@@ -83,6 +85,21 @@ export class DeliveryController {
     return await this.deliveryService.updateDelivery(
       param.deliveryId,
       data,
+      user,
+    );
+  }
+
+  @Post(':deliveryId/finish-from-ifood')
+  @UseGuards(JwtAuthGuard)
+  async finishFromIfood(
+    @Param() param: DeliveryParamsDto,
+    @User() user: UserRequest,
+  ) {
+    if (user.type !== UserType.SUPERADMIN) {
+      throw new ForbiddenException('Somente o super admin pode finalizar sem código.');
+    }
+    return await this.deliveryService.finishIfoodDeliveryAdministratively(
+      param.deliveryId,
       user,
     );
   }
