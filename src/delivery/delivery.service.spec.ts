@@ -88,6 +88,7 @@ describe('DeliveryService', () => {
             getOrderDetails: jest
               .fn()
               .mockResolvedValue({ orderStatus: 'CON' }),
+            getOrderState: jest.fn().mockResolvedValue({ status: 'CONCLUDED' }),
           },
         },
         {
@@ -140,7 +141,7 @@ describe('DeliveryService', () => {
       ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
         ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
       });
-      ifoodOrdersService.getOrderDetails.mockResolvedValue({ orderStatus: 'CON' });
+      ifoodOrdersService.getOrderState.mockResolvedValue({ status: 'CONCLUDED' });
 
       const result = await service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
@@ -165,8 +166,51 @@ describe('DeliveryService', () => {
       ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
         ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
       });
-      ifoodOrdersService.getOrderDetails.mockResolvedValue({ orderStatus: 'DISPATCHED' });
+      ifoodOrdersService.getOrderState.mockResolvedValue({ status: 'DISPATCHED' });
 
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      )).rejects.toThrow('iFood não confirmou conclusão');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia quando API de pedidos responde sem status (não autoriza por finishedAt)', async () => {
+      userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne.mockResolvedValue({
+        ...delivery, finishedAt: new Date(),
+      });
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
+      });
+      ifoodOrdersService.getOrderState.mockResolvedValue({ id: 'ifood-1' });
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      )).rejects.toThrow('SEM_STATUS_NA_API_PEDIDOS');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('diferencia erro HTTP 403 e impede conclusão sem confirmação', async () => {
+      userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne.mockResolvedValue(delivery);
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
+      });
+      ifoodOrdersService.getOrderState.mockRejectedValue({
+        response: { status: 403 }, message: 'Forbidden',
+      });
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      )).rejects.toThrow('ERRO_HTTP_403');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('não confunde NOT_CONCLUDED com CONCLUDED', async () => {
+      userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne.mockResolvedValue(delivery);
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
+      });
+      ifoodOrdersService.getOrderState.mockResolvedValue({ status: 'NOT_CONCLUDED' });
       await expect(service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
       )).rejects.toThrow('iFood não confirmou conclusão');

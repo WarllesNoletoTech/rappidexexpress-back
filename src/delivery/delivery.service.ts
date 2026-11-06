@@ -657,6 +657,61 @@ export class DeliveryService implements OnModuleInit {
     }
   }
 
+  /**
+   * Verificação exclusiva da finalização excepcional do SUPERADMIN.
+   * O endpoint de logística nem sempre informa o estado do pedido.
+   * Nunca autorizar baseado somente no horário ou status local.
+   */
+  private async getIfoodConclusionStatusForAdmin(
+    orderId: string,
+    merchantId: string,
+  ): Promise<{ status: string; isConcluded: boolean }> {
+    try {
+      const order = await this.ifoodOrdersService.getOrderState(orderId, merchantId);
+      const orderStatus = String(
+        order?.orderStatus ||
+          order?.status ||
+          order?.metadata?.status ||
+          order?.order?.status ||
+          '',
+      )
+        .trim()
+        .toUpperCase();
+
+      // Lista explícita: não interpretar substrings como 'NOT_CONCLUDED'.
+      const concludedStatuses = new Set([
+        'CON',
+        'CONCLUDED',
+        'COMPLETED',
+        'DELIVERED',
+        'FINALIZED',
+        'ENTREGUE',
+        'CONCLUIDO',
+        'CONCLUÍDO',
+      ]);
+      if (!orderStatus) {
+        this.logger.warn(
+          `Consulta administrativa iFood sem campo de status. orderId=${orderId} merchantId=${merchantId} campos=${Object.keys(order && typeof order === 'object' ? order : {}).join(',')}`,
+        );
+        return { status: 'SEM_STATUS_NA_API_PEDIDOS', isConcluded: false };
+      }
+
+      return {
+        status: orderStatus,
+        isConcluded: concludedStatuses.has(orderStatus),
+      };
+    } catch (error: any) {
+      const httpStatus = Number(error?.response?.status || 0);
+      const reason = httpStatus
+        ? `ERRO_HTTP_${httpStatus}`
+        : 'ERRO_CONSULTA_IFOOD';
+      this.logger.warn(
+        `Confirmação administrativa iFood indisponível. orderId=${orderId} merchantId=${merchantId} diagnostico=${reason} motivo=${error?.message || 'N/A'}`,
+      );
+      return { status: reason, isConcluded: false };
+    }
+  }
+
   async onModuleInit() {
     await this.ensureDeliveryIndexes();
   }
@@ -2055,8 +2110,9 @@ export class DeliveryService implements OnModuleInit {
       );
     }
 
-    // Consulta de leitura: não altera o pedido no iFood.
-    const ifoodResult = await this.getIfoodConclusionStatus(
+    // Consulta de leitura na API de pedidos, não na API de logística.
+    // Não altera o pedido no iFood.
+    const ifoodResult = await this.getIfoodConclusionStatusForAdmin(
       ifoodOrderId,
       merchantId,
     );

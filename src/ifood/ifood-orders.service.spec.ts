@@ -33,6 +33,25 @@ describe('IfoodOrdersService', () => {
     return service;
   }
 
+  it('consulta status na API de Pedidos sem alterar o pedido', async () => {
+    const getAccessToken = jest.fn().mockResolvedValue('token-test');
+    const request = jest.fn().mockResolvedValue({ data: { status: 'CONCLUDED' } });
+    const service = new IfoodOrdersService(
+      { getAccessToken } as any,
+      { request } as any,
+      { get: jest.fn() } as any,
+      {} as any,
+    );
+
+    await expect(service.getOrderState('order-123', 'merchant-456'))
+      .resolves.toEqual({ status: 'CONCLUDED' });
+    expect(getAccessToken).toHaveBeenCalledWith({ merchantId: 'merchant-456' });
+    expect(request).toHaveBeenCalledWith('order_state', expect.objectContaining({
+      method: 'GET',
+      url: 'https://merchant-api.ifood.com.br/order/v1.0/orders/order-123',
+    }));
+  });
+
   it('creates iFood delivery as PENDENTE when company skips preparation time', async () => {
     const userRepository = {
       findOne: jest

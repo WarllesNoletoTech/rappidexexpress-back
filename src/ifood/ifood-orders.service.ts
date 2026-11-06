@@ -59,6 +59,36 @@ export class IfoodOrdersService {
     }
   }
 
+  /**
+   * Consulta o estado do pedido na API de Pedidos do iFood.
+   * Diferentemente de /logistics/v1.0/orders/{id}, esta rota expõe
+   * o estado geral do pedido (ex.: CONCLUDED) quando disponível.
+   * Operação exclusivamente de leitura.
+   */
+  async getOrderState(orderId: string, merchantId?: string | null) {
+    const accessToken = await this.ifoodAuthService.getAccessToken({
+      merchantId,
+    });
+
+    try {
+      const response = await this.ifoodHttpService.request('order_state', {
+        method: 'GET',
+        url: `https://merchant-api.ifood.com.br/order/v1.0/orders/${encodeURIComponent(orderId)}`,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      return response.data;
+    } catch (error: any) {
+      // Preserva o erro HTTP original para diferenciar 401/403/404 de
+      // uma resposta válida sem campo de status. Nunca registra o token.
+      this.logger.warn(
+        `Falha ao consultar estado iFood na API de pedidos. orderId=${orderId} merchantId=${merchantId || 'N/A'} httpStatus=${error?.response?.status || 'N/A'} motivo=${error?.message || 'N/A'}`,
+      );
+      throw error;
+    }
+  }
+
   async dispatchOrder(orderId: string, merchantId?: string | null) {
     const accessToken = await this.ifoodAuthService.getAccessToken({
       merchantId,
