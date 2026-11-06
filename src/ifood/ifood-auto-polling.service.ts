@@ -158,6 +158,22 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
           this.ifoodImportService.isEligibleImportEvent?.(event) === true,
       );
 
+      // Salvar comprovantes de conclusão ANTES do ACK. Se o processamento da
+      // entrega falhar, o evento continuará disponível para reconciliação.
+      const securedConclusionEventIds = new Set<string>();
+      for (const event of freshEvents) {
+        const eventId = String(event?.id || '').trim();
+        if (
+          !eventId ||
+          securedConclusionEventIds.has(eventId) ||
+          !(event?.code === 'CON' || event?.fullCode === 'CONCLUDED')
+        ) {
+          continue;
+        }
+        await this.ifoodEventService.markAsProcessed(event, false, 'POLLING');
+        securedConclusionEventIds.add(eventId);
+      }
+
       if (polledAckTargets.length > 0) {
         await this.ackWithDeadlineAndFallback(polledAckTargets);
         this.metrics.eventsAcked += polledEventIds.length;
@@ -253,7 +269,10 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
         await this.ifoodImportService.importFromEvents(freshEvents);
 
         for (const event of freshEvents) {
-          await this.ifoodEventService.markAsProcessed(event, true);
+          if (securedConclusionEventIds.has(String(event?.id || '').trim())) {
+            continue; // Já persistido antes do ACK; acknowledged atualizado.
+          }
+          await this.ifoodEventService.markAsProcessed(event, true, 'POLLING');
         }
       }
       await this.ifoodImportService.retryPendingImportsForActiveMerchants?.(

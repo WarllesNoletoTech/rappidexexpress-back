@@ -287,3 +287,36 @@ describe('IfoodAutoPollingService', () => {
     ]);
   });
 });
+
+describe('Persistência de conclusão antes do ACK', () => {
+  it('deve manter ordem de persistência antes de confirmar o evento CON ao iFood', async () => {
+    const { IfoodAutoPollingService } = await import('./ifood-auto-polling.service');
+    const ifoodPollingService = {
+      pollEventsWithMetadata: jest.fn().mockResolvedValue({
+        events: [{ id: 'evt-con', orderId: 'ord-1', merchantId: 'merchant-1', code: 'CON' }],
+        metadata: { maxMerchantsPerBatch: 1 },
+      }),
+      acknowledgeEvents: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const eventService = {
+      findByEventId: jest.fn().mockResolvedValue(null),
+      markAsProcessed: jest.fn().mockResolvedValue(undefined),
+      markAsAcknowledged: jest.fn().mockResolvedValue(undefined),
+      findUnacknowledgedEvents: jest.fn().mockResolvedValue([]),
+    } as any;
+    const service = new IfoodAutoPollingService(
+      { get: jest.fn() } as any,
+      ifoodPollingService,
+      { importFromEvents: jest.fn().mockResolvedValue(undefined) } as any,
+      eventService,
+      { finishDeliveryFromIfood: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+
+    await (service as any).runPollingCycle();
+    expect(eventService.markAsProcessed).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'evt-con' }), false, 'POLLING',
+    );
+    expect(eventService.markAsProcessed.mock.invocationCallOrder[0])
+      .toBeLessThan(ifoodPollingService.acknowledgeEvents.mock.invocationCallOrder[0]);
+  });
+});

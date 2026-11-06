@@ -658,57 +658,52 @@ export class DeliveryService implements OnModuleInit {
   }
 
   /**
-   * Verificação exclusiva da finalização excepcional do SUPERADMIN.
-   * O endpoint de logística nem sempre informa o estado do pedido.
-   * Nunca autorizar baseado somente no horário ou status local.
+   * A aplicação Rappidex é da categoria Logistics, sem escopo Order.
+   * Confirma a conclusão exclusivamente por eventos autenticamente recebidos
+   * no módulo Events (polling autenticado ou webhook assinado).
+   * Eventos antigos sem origem comprovável não autorizam finalização.
    */
   private async getIfoodConclusionStatusForAdmin(
     orderId: string,
     merchantId: string,
-  ): Promise<{ status: string; isConcluded: boolean }> {
+  ): Promise<{ status: string; isConcluded: boolean; eventId?: string }> {
     try {
-      const order = await this.ifoodOrdersService.getOrderState(orderId, merchantId);
-      const orderStatus = String(
-        order?.orderStatus ||
-          order?.status ||
-          order?.metadata?.status ||
-          order?.order?.status ||
-          '',
-      )
-        .trim()
-        .toUpperCase();
+      const events = await this.ifoodEventService.findByOrderId(orderId);
+      const verified = (Array.isArray(events) ? events : []).filter((event) =>
+        String(event?.merchantId || '').trim() === merchantId &&
+        (event?.verifiedSource === 'POLLING' ||
+          event?.verifiedSource === 'WEBHOOK_VERIFIED'),
+      );
 
-      // Lista explícita: não interpretar substrings como 'NOT_CONCLUDED'.
-      const concludedStatuses = new Set([
-        'CON',
-        'CONCLUDED',
-        'COMPLETED',
-        'DELIVERED',
-        'FINALIZED',
-        'ENTREGUE',
-        'CONCLUIDO',
-        'CONCLUÍDO',
-      ]);
-      if (!orderStatus) {
+      // Um pedido com evento de cancelamento não deve ser finalizado
+      // automaticamente, mesmo que exista um CON anterior.
+      const hasCancellation = verified.some((event) =>
+        event?.code === 'CAN' || event?.fullCode === 'CANCELLED',
+      );
+      if (hasCancellation) {
+        return { status: 'EVENTO_CANCELAMENTO_IFOOD', isConcluded: false };
+      }
+
+      const conclusion = verified.find((event) =>
+        event?.code === 'CON' || event?.fullCode === 'CONCLUDED',
+      );
+      if (!conclusion) {
         this.logger.warn(
-          `Consulta administrativa iFood sem campo de status. orderId=${orderId} merchantId=${merchantId} campos=${Object.keys(order && typeof order === 'object' ? order : {}).join(',')}`,
+          `Finalização admin bloqueada: nenhum evento CON confiável. orderId=${orderId} merchantId=${merchantId} eventosConsultados=${events?.length || 0}`,
         );
-        return { status: 'SEM_STATUS_NA_API_PEDIDOS', isConcluded: false };
+        return { status: 'SEM_EVENTO_CONCLUSAO_IFOOD', isConcluded: false };
       }
 
       return {
-        status: orderStatus,
-        isConcluded: concludedStatuses.has(orderStatus),
+        status: 'CONCLUDED_EVENTO_IFOOD',
+        isConcluded: true,
+        eventId: String(conclusion?.eventId || ''),
       };
     } catch (error: any) {
-      const httpStatus = Number(error?.response?.status || 0);
-      const reason = httpStatus
-        ? `ERRO_HTTP_${httpStatus}`
-        : 'ERRO_CONSULTA_IFOOD';
       this.logger.warn(
-        `Confirmação administrativa iFood indisponível. orderId=${orderId} merchantId=${merchantId} diagnostico=${reason} motivo=${error?.message || 'N/A'}`,
+        `Falha ao conferir eventos iFood para finalização administrativa. orderId=${orderId} merchantId=${merchantId} motivo=${error?.message || 'N/A'}`,
       );
-      return { status: reason, isConcluded: false };
+      return { status: 'ERRO_CONSULTA_EVENTOS_IFOOD', isConcluded: false };
     }
   }
 
@@ -2110,7 +2105,7 @@ export class DeliveryService implements OnModuleInit {
       );
     }
 
-    // Consulta de leitura na API de pedidos, não na API de logística.
+    // Consulta eventos iFood autenticamente recebidos e vinculados a esta loja.
     // Não altera o pedido no iFood.
     const ifoodResult = await this.getIfoodConclusionStatusForAdmin(
       ifoodOrderId,
@@ -2139,6 +2134,7 @@ export class DeliveryService implements OnModuleInit {
           manualFinishedAt: finishedAt,
           manualFinishedReason: 'iFood já concluído; código indisponível',
           manualFinishedIfoodStatus: ifoodResult.status,
+          manualFinishedIfoodEventId: ifoodResult.eventId,
         },
       } as any,
     );
@@ -2181,7 +2177,7 @@ export class DeliveryService implements OnModuleInit {
       updated.establishment?.cityId,
     );
     this.logger.warn(
-      `Finalização administrativa iFood: deliveryId=${deliveryId} adminId=${admin.id} statusIfood=${ifoodResult.status}. Sem envio de evento ao iFood.`,
+      `Finalização administrativa iFood: deliveryId=${deliveryId} adminId=${admin.id} statusIfood=${ifoodResult.status} eventoId=${ifoodResult.eventId || 'N/A'}. Sem envio de evento ao iFood.`,
     );
     return DeliveryResult.fromEntity(updated);
   }

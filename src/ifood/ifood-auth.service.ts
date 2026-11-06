@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { IfoodHttpService } from './ifood-http.service';
 
 type AuthProfile = {
@@ -37,6 +38,32 @@ export class IfoodAuthService {
     private readonly configService: ConfigService,
     private readonly ifoodHttpService: IfoodHttpService,
   ) {}
+
+  /**
+   * iFood assina o corpo bruto via X-IFood-Signature (HMAC SHA256).
+   * A comparação suporta múltiplos perfis centralizados, sem expor segredos.
+   */
+  verifyWebhookSignature(rawBody: Buffer | undefined, signature: string | undefined): boolean {
+    const candidate = String(signature || '').trim();
+    if (!Buffer.isBuffer(rawBody) || !/^[a-fA-F0-9]{64}$/.test(candidate)) {
+      return false;
+    }
+
+    const supplied = Buffer.from(candidate, 'hex');
+    const configuredSecrets = new Set(
+      [
+        this.configService.get<string>('IFOOD_CLIENT_SECRET') || '',
+        ...Object.values(this.getAuthProfiles()).map((profile) => profile.clientSecret),
+      ].filter(Boolean),
+    );
+    if (configuredSecrets.size === 0) return false;
+
+    // Não registrar corpo, assinatura ou segredos em logs.
+    return Array.from(configuredSecrets).some((secret) => {
+      const expected = createHmac('sha256', secret).update(rawBody).digest();
+      return timingSafeEqual(expected, supplied);
+    });
+  }
 
   async getAccessToken(options?: {
     merchantId?: string | null;

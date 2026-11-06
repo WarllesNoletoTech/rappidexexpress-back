@@ -19,6 +19,10 @@ export class IfoodEventService implements OnModuleInit {
         {},
       );
       this.logger.log('Índice MongoDB garantido em ifood_event: acknowledged');
+      await this.ifoodEventRepository.createCollectionIndex(
+        { orderId: 1, merchantId: 1 },
+        { name: 'IDX_IFOOD_EVENT_ORDER_MERCHANT' },
+      );
     } catch (error: any) {
       this.logger.warn(
         `Não foi possível garantir o índice acknowledged em ifood_event: ${error?.message || error}`,
@@ -77,6 +81,7 @@ export class IfoodEventService implements OnModuleInit {
       createdAt?: string;
     },
     acknowledged = false,
+    verifiedSource?: 'POLLING' | 'WEBHOOK_VERIFIED',
   ) {
     return this.ifoodEventRepository.save({
       eventId: event.id,
@@ -85,6 +90,7 @@ export class IfoodEventService implements OnModuleInit {
       code: event.code ?? '',
       fullCode: event.fullCode ?? '',
       salesChannel: event.salesChannel ?? '',
+      verifiedSource,
       createdAt: event.createdAt ?? '',
       processedAt: new Date(),
       acknowledged,

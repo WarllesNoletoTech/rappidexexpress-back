@@ -61,7 +61,7 @@ export class IfoodWebhookService {
         continue;
       }
 
-      await this.ifoodEventService.markAsProcessed(event, true);
+      await this.ifoodEventService.markAsProcessed(event, true, 'WEBHOOK_VERIFIED');
       freshEvents.push(event);
     }
 

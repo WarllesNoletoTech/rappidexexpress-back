@@ -50,6 +50,7 @@ describe('IfoodWebhookService', () => {
     expect(ifoodEventService.markAsProcessed).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'evt-1' }),
       true,
+      'WEBHOOK_VERIFIED',
     );
     expect(ifoodImportService.importFromEvents).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ id: 'evt-1' })]),

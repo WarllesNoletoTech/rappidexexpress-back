@@ -69,7 +69,8 @@ function createNestOptions(): NestApplicationOptions {
     ],
   });
 
-  return { logger };
+  // Necessário para conferir a assinatura HMAC do iFood sobre os bytes exatos.
+  return { logger, rawBody: true };
 }
 
 function setupGlobalPipes(app: INestApplication) {

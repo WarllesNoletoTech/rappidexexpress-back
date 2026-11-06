@@ -109,6 +109,7 @@ describe('DeliveryService', () => {
           provide: IfoodEventService,
           useValue: {
             hasDeliveryDropCodeRequested: jest.fn().mockResolvedValue(true),
+            findByOrderId: jest.fn().mockResolvedValue([]),
           },
         },
       ],
@@ -132,16 +133,25 @@ describe('DeliveryService', () => {
       motoboy: { id: 'motoboy-1' },
     };
 
-    it('conclui localmente somente com status CON no iFood, sem enviar finalização ao iFood', async () => {
+    const confirmedEvent = {
+      eventId: 'event-con-1', orderId: 'ifood-1', merchantId: 'merchant-1',
+      code: 'CON', fullCode: 'CONCLUDED', verifiedSource: 'POLLING',
+    };
+    const prepare = () => {
       userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne.mockResolvedValue(delivery);
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
+      });
+    };
+
+    it('finaliza só com evento CON recebido do iFood por polling autenticado', async () => {
+      prepare();
       deliveryRepository.findOne
         .mockResolvedValueOnce(delivery)
         .mockResolvedValueOnce({ ...delivery, status: StatusDelivery.FINISHED });
       deliveryRepository.updateOne.mockResolvedValue({ modifiedCount: 1 });
-      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
-        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
-      });
-      ifoodOrdersService.getOrderState.mockResolvedValue({ status: 'CONCLUDED' });
+      ifoodEventService.findByOrderId.mockResolvedValue([confirmedEvent]);
 
       const result = await service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
@@ -153,67 +163,82 @@ describe('DeliveryService', () => {
           id: 'delivery-1', status: StatusDelivery.AWAITING_CODE,
         }),
         expect.objectContaining({
-          $set: expect.objectContaining({ status: StatusDelivery.FINISHED }),
+          $set: expect.objectContaining({
+            status: StatusDelivery.FINISHED,
+            manualFinishedIfoodEventId: 'event-con-1',
+          }),
         }),
       );
+      expect(ifoodOrdersService.getOrderState).not.toHaveBeenCalled();
       expect(ifoodOrdersService.verifyDeliveryCode).not.toHaveBeenCalled();
       expect(ifoodOrdersService.dispatchOrder).not.toHaveBeenCalled();
     });
 
-    it('bloqueia se o iFood ainda não confirmou a conclusão', async () => {
-      userRepository.findOneBy.mockResolvedValue(superAdmin);
-      deliveryRepository.findOne.mockResolvedValue(delivery);
-      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
-        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
-      });
-      ifoodOrdersService.getOrderState.mockResolvedValue({ status: 'DISPATCHED' });
+    it('aceita evento recebido por webhook assinado', async () => {
+      prepare();
+      deliveryRepository.findOne
+        .mockResolvedValueOnce(delivery)
+        .mockResolvedValueOnce({ ...delivery, status: StatusDelivery.FINISHED });
+      deliveryRepository.updateOne.mockResolvedValue({ modifiedCount: 1 });
+      ifoodEventService.findByOrderId.mockResolvedValue([
+        { ...confirmedEvent, verifiedSource: 'WEBHOOK_VERIFIED' },
+      ]);
+      const result = await service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      );
+      expect(result.status).toBe(StatusDelivery.FINISHED);
+    });
 
+    it('não finaliza se não existe evento conclusivo persistido', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockResolvedValue([]);
       await expect(service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
-      )).rejects.toThrow('iFood não confirmou conclusão');
+      )).rejects.toThrow('SEM_EVENTO_CONCLUSAO_IFOOD');
       expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
     });
 
-    it('bloqueia quando API de pedidos responde sem status (não autoriza por finishedAt)', async () => {
-      userRepository.findOneBy.mockResolvedValue(superAdmin);
-      deliveryRepository.findOne.mockResolvedValue({
-        ...delivery, finishedAt: new Date(),
-      });
-      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
-        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
-      });
-      ifoodOrdersService.getOrderState.mockResolvedValue({ id: 'ifood-1' });
+    it('ignora eventos sem origem comprovada, inclusive registros legados', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockResolvedValue([
+        { ...confirmedEvent, verifiedSource: undefined },
+        { ...confirmedEvent, verifiedSource: 'WEBHOOK' },
+      ]);
       await expect(service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
-      )).rejects.toThrow('SEM_STATUS_NA_API_PEDIDOS');
+      )).rejects.toThrow('SEM_EVENTO_CONCLUSAO_IFOOD');
       expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
     });
 
-    it('diferencia erro HTTP 403 e impede conclusão sem confirmação', async () => {
-      userRepository.findOneBy.mockResolvedValue(superAdmin);
-      deliveryRepository.findOne.mockResolvedValue(delivery);
-      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
-        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
-      });
-      ifoodOrdersService.getOrderState.mockRejectedValue({
-        response: { status: 403 }, message: 'Forbidden',
-      });
+    it('bloqueia se evento CON pertence a outra loja', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockResolvedValue([
+        { ...confirmedEvent, merchantId: 'outro-merchant' },
+      ]);
       await expect(service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
-      )).rejects.toThrow('ERRO_HTTP_403');
+      )).rejects.toThrow('SEM_EVENTO_CONCLUSAO_IFOOD');
       expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
     });
 
-    it('não confunde NOT_CONCLUDED com CONCLUDED', async () => {
-      userRepository.findOneBy.mockResolvedValue(superAdmin);
-      deliveryRepository.findOne.mockResolvedValue(delivery);
-      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
-        ifoodOrderId: 'ifood-1', merchantId: 'merchant-1',
-      });
-      ifoodOrdersService.getOrderState.mockResolvedValue({ status: 'NOT_CONCLUDED' });
+    it('bloqueia se existir cancelamento confirmado', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockResolvedValue([
+        confirmedEvent,
+        { ...confirmedEvent, eventId: 'event-can-1', code: 'CAN', fullCode: 'CANCELLED' },
+      ]);
       await expect(service.finishIfoodDeliveryAdministratively(
         'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
-      )).rejects.toThrow('iFood não confirmou conclusão');
+      )).rejects.toThrow('EVENTO_CANCELAMENTO_IFOOD');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia se o MongoDB não consegue consultar os eventos', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockRejectedValue(new Error('mongo unavailable'));
+      await expect(service.finishIfoodDeliveryAdministratively(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+      )).rejects.toThrow('ERRO_CONSULTA_EVENTOS_IFOOD');
       expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
     });
 

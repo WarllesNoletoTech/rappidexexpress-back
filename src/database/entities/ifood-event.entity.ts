@@ -25,6 +25,10 @@ export class IfoodEventEntity {
   @Column({ nullable: true })
   salesChannel?: string;
 
+  /** Origem autenticada do evento; registros antigos ficam sem origem confiável. */
+  @Column({ nullable: true })
+  verifiedSource?: 'POLLING' | 'WEBHOOK_VERIFIED';
+
   @Column({ nullable: true })
   createdAt?: string;
 
