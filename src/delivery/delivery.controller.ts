@@ -35,6 +35,7 @@ import {
   ListDeliverysResult,
   UpdateDeliveryDto,
   ReleaseDeliveryDto,
+  ManualIfoodReconciliationDto,
 } from './dto';
 
 @Controller('delivery')
@@ -101,6 +102,26 @@ export class DeliveryController {
     return await this.deliveryService.finishIfoodDeliveryAdministratively(
       param.deliveryId,
       user,
+    );
+  }
+
+  /** Regularização excepcional com comprovante, quando o evento iFood foi perdido.
+   * Não afirma que a API confirmou a entrega.
+   */
+  @Post(':deliveryId/reconcile-ifood-manually')
+  @UseGuards(JwtAuthGuard)
+  async reconcileIfoodManually(
+    @Param() param: DeliveryParamsDto,
+    @User() user: UserRequest,
+    @Body() data: ManualIfoodReconciliationDto,
+  ) {
+    if (user.type !== UserType.SUPERADMIN) {
+      throw new ForbiddenException('Somente o super admin pode regularizar a entrega.');
+    }
+    return this.deliveryService.reconcileIfoodDeliveryManually(
+      param.deliveryId,
+      user,
+      data,
     );
   }
 

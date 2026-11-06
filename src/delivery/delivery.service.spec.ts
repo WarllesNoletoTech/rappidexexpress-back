@@ -273,6 +273,99 @@ describe('DeliveryService', () => {
     });
   });
 
+  describe('regularização com comprovante externo — exclusiva do SUPERADMIN', () => {
+    const superAdmin = { id: 'superadmin-1', type: UserType.SUPERADMIN, cityId: 'city-1' };
+    const delivery = {
+      id: 'delivery-1', isActive: true, status: StatusDelivery.AWAITING_CODE,
+      establishment: { id: 'shop-1', cityId: 'city-1' }, motoboy: { id: 'motoboy-1' },
+    };
+    const data = {
+      ifoodDisplayId: '2177',
+      evidenceReference: 'Print Gestor iFood 06/11/2026',
+      evidenceDescription: 'Pedido consta concluído no Gestor iFood; motoboy ficou sem internet.',
+      confirmedConcludedOnIfood: true as const,
+    };
+    const prepare = () => {
+      userRepository.findOneBy.mockResolvedValue(superAdmin);
+      deliveryRepository.findOne.mockResolvedValue(delivery);
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+        ifoodOrderId: 'ifood-uuid-2177', ifoodDisplayId: '2177', merchantId: 'merchant-1',
+      });
+      ifoodEventService.findByOrderId.mockResolvedValue([]);
+    };
+
+    it('regulariza por declaração auditável sem inventar confirmação pela API', async () => {
+      prepare();
+      deliveryRepository.findOne.mockResolvedValueOnce(delivery).mockResolvedValueOnce({
+        ...delivery, status: StatusDelivery.FINISHED,
+      });
+      deliveryRepository.updateOne.mockResolvedValue({ modifiedCount: 1 });
+      const result = await service.reconcileIfoodDeliveryManually(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any, data,
+      );
+      expect(result.status).toBe(StatusDelivery.FINISHED);
+      expect(deliveryRepository.updateOne).toHaveBeenCalledWith(
+        expect.objectContaining({ status: StatusDelivery.AWAITING_CODE }),
+        expect.objectContaining({ $set: expect.objectContaining({
+          manualFinishedMode: 'COMPROVACAO_EXTERNA_SUPERADMIN',
+          manualFinishedIfoodStatus: 'DECLARADO_COM_COMPROVANTE_NAO_VALIDADO_PELA_API',
+          manualFinishedEvidenceReference: data.evidenceReference,
+        }) }),
+      );
+      expect(ifoodOrdersService.getOrderDetails).not.toHaveBeenCalled();
+      expect(ifoodOrdersService.getOrderState).not.toHaveBeenCalled();
+      expect(ifoodOrdersService.verifyDeliveryCode).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia ADMIN mesmo com JWT afirmando SUPERADMIN', async () => {
+      userRepository.findOneBy.mockResolvedValue({
+        id: 'admin-1', type: UserType.ADMIN, cityId: 'city-1',
+      });
+      await expect(service.reconcileIfoodDeliveryManually(
+        'delivery-1', { id: 'admin-1', type: UserType.SUPERADMIN } as any, data,
+      )).rejects.toThrow('Somente o super admin');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia número do pedido diferente do vínculo iFood', async () => {
+      prepare();
+      await expect(service.reconcileIfoodDeliveryManually(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+        { ...data, ifoodDisplayId: '2178' },
+      )).rejects.toThrow('não corresponde');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia a falta de justificativa ou confirmação explícita', async () => {
+      prepare();
+      await expect(service.reconcileIfoodDeliveryManually(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any,
+        { ...data, evidenceDescription: '', confirmedConcludedOnIfood: false as any },
+      )).rejects.toThrow('Confirme a conclusão');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('bloqueia cancelamento identificado em evento iFood autenticado', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockResolvedValue([{
+        merchantId: 'merchant-1', verifiedSource: 'POLLING', code: 'CAN', fullCode: 'CANCELLED',
+      }]);
+      await expect(service.reconcileIfoodDeliveryManually(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any, data,
+      )).rejects.toThrow('cancelamento iFood');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('não prossegue quando a consulta de eventos locais falha', async () => {
+      prepare();
+      ifoodEventService.findByOrderId.mockRejectedValue(new Error('mongo indisponível'));
+      await expect(service.reconcileIfoodDeliveryManually(
+        'delivery-1', { id: superAdmin.id, type: superAdmin.type } as any, data,
+      )).rejects.toThrow('mongo indisponível');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+  });
+
   it('should be defined', () => {
     expect(service).toBeDefined();
   });

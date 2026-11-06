@@ -30,6 +30,7 @@ import {
   ListDeliverysResult,
   UpdateDeliveryDto,
   ReleaseDeliveryDto,
+  ManualIfoodReconciliationDto,
 } from './dto';
 import { UserRequest } from '../shared/interfaces';
 import {
@@ -2135,6 +2136,7 @@ export class DeliveryService implements OnModuleInit {
           manualFinishedReason: 'iFood já concluído; código indisponível',
           manualFinishedIfoodStatus: ifoodResult.status,
           manualFinishedIfoodEventId: ifoodResult.eventId,
+          manualFinishedMode: 'EVENTO_IFOOD_VERIFICADO',
         },
       } as any,
     );
@@ -2179,6 +2181,125 @@ export class DeliveryService implements OnModuleInit {
     this.logger.warn(
       `Finalização administrativa iFood: deliveryId=${deliveryId} adminId=${admin.id} statusIfood=${ifoodResult.status} eventoId=${ifoodResult.eventId || 'N/A'}. Sem envio de evento ao iFood.`,
     );
+    return DeliveryResult.fromEntity(updated);
+  }
+
+  /**
+   * Via extraordinária com comprovante conferido fora da API pelo SUPERADMIN.
+   * Necessária para pedidos antigos sem evento CON verificável. Não equivale a
+   * confirmação técnica do iFood, e deve ser identificada nos relatórios.
+   * Não chama a API do iFood nem valida/substitui o código do cliente.
+   */
+  async reconcileIfoodDeliveryManually(
+    deliveryId: string,
+    user: UserRequest,
+    data: ManualIfoodReconciliationDto,
+  ): Promise<DeliveryResult> {
+    // Nunca confiar no perfil do JWT isoladamente: conferir no MongoDB.
+    const admin = await this.findOneUserById(user.id);
+    if (admin.type !== UserType.SUPERADMIN) {
+      throw new ForbiddenException('Somente o super admin pode regularizar a entrega.');
+    }
+
+    const suppliedDisplayId = String(data?.ifoodDisplayId || '').trim();
+    const evidenceReference = String(data?.evidenceReference || '').trim();
+    const evidenceDescription = String(data?.evidenceDescription || '').trim();
+    if (data?.confirmedConcludedOnIfood !== true ||
+        !suppliedDisplayId || suppliedDisplayId.length > 64 ||
+        evidenceReference.length < 8 || evidenceReference.length > 200 ||
+        evidenceDescription.length < 20 || evidenceDescription.length > 500) {
+      throw new BadRequestException(
+        'Confirme a conclusão no Gestor iFood e informe o número do pedido, a referência do comprovante e a justificativa.',
+      );
+    }
+
+    const delivery = await this.deliveryRepository.findOne({
+      where: { id: deliveryId, isActive: true } as any,
+      relations: { establishment: true, motoboy: true },
+    });
+    if (!delivery) throw new BadRequestException('Entrega ativa não encontrada.');
+    this.ensureCityAccess(admin, delivery.establishment?.cityId ?? admin.cityId);
+
+    if (delivery.status === StatusDelivery.FINISHED) {
+      return DeliveryResult.fromEntity(delivery);
+    }
+    if (delivery.status !== StatusDelivery.AWAITING_CODE) {
+      throw new BadRequestException('Regularização permitida apenas para entrega aguardando código.');
+    }
+
+    const link = await this.ifoodOrderLinkService.findByDeliveryId(deliveryId);
+    const orderId = String(link?.ifoodOrderId || '').trim();
+    const merchantId = String(link?.merchantId || '').trim();
+    const actualDisplayId = String(link?.ifoodDisplayId || delivery.ifoodDisplayId || '').trim();
+    if (!orderId || !merchantId || !actualDisplayId) {
+      throw new BadRequestException('Vínculo iFood incompleto; não é possível conferir a identidade do pedido.');
+    }
+    if (suppliedDisplayId !== actualDisplayId) {
+      throw new BadRequestException('O número do pedido informado não corresponde ao vínculo iFood desta entrega.');
+    }
+
+    // Consulta local: nunca regularizar uma entrega com cancelamento já conhecido.
+    const events = await this.ifoodEventService.findByOrderId(orderId);
+    const verified = (Array.isArray(events) ? events : []).filter((event) =>
+      String(event?.merchantId || '').trim() === merchantId &&
+      (event?.verifiedSource === 'POLLING' || event?.verifiedSource === 'WEBHOOK_VERIFIED'),
+    );
+    const knownCancellation = verified.some((event) =>
+      event?.code === 'CAN' || event?.fullCode === 'CANCELLED',
+    ) || [delivery.ifoodStatus, delivery.ifoodLastEventCode, delivery.ifoodLastEventFullCode]
+      .some((value) => /CAN|CANCEL/i.test(String(value || '')));
+    if (knownCancellation) {
+      throw new BadRequestException('Existe indicação de cancelamento iFood; regularização bloqueada.');
+    }
+    if (verified.some((event) => event?.code === 'CON' || event?.fullCode === 'CONCLUDED')) {
+      throw new BadRequestException('Há evento CON verificado. Utilize Finalizar pelo iFood em vez da regularização manual.');
+    }
+
+    const finishedAt = addHours(new Date(), -3);
+    const result = await this.deliveryRepository.updateOne(
+      { id: deliveryId, isActive: true, status: StatusDelivery.AWAITING_CODE } as any,
+      { $set: {
+        status: StatusDelivery.FINISHED,
+        finishedAt,
+        updatedAt: finishedAt,
+        manualFinishedById: admin.id,
+        manualFinishedAt: finishedAt,
+        manualFinishedReason: 'Regularização excepcional: comprovante conferido pelo SUPERADMIN',
+        manualFinishedMode: 'COMPROVACAO_EXTERNA_SUPERADMIN',
+        manualFinishedIfoodStatus: 'DECLARADO_COM_COMPROVANTE_NAO_VALIDADO_PELA_API',
+        manualFinishedIfoodDisplayId: actualDisplayId,
+        manualFinishedEvidenceReference: evidenceReference,
+        manualFinishedEvidenceDescription: evidenceDescription,
+      } } as any,
+    );
+    if (!result?.modifiedCount) {
+      const current = await this.deliveryRepository.findOneByOrFail({ id: deliveryId });
+      if (current.status === StatusDelivery.FINISHED) return DeliveryResult.fromEntity(current);
+      throw new ConflictException('O status da entrega mudou durante a regularização. Atualize o painel.');
+    }
+
+    const updated = await this.deliveryRepository.findOne({
+      where: { id: deliveryId },
+      relations: { establishment: true, motoboy: true },
+    });
+    if (!updated) throw new InternalServerErrorException('Entrega atualizada, mas não recuperada.');
+
+    try {
+      await this.logRepository.save({
+        id: uuid(),
+        where: `Regularização manual iFood da entrega ${deliveryId}`,
+        type: 'REGULARIZACAO_IFOOD_COM_COMPROVANTE',
+        error: 'Sem erro',
+        user: admin,
+        status: `Declaração externa SUPERADMIN. Pedido iFood ${actualDisplayId}; ordem ${orderId}; merchant ${merchantId}; comprovante: ${evidenceReference}; justificativa: ${evidenceDescription}`,
+      });
+    } catch (error: any) {
+      this.logger.error(`Regularização ${deliveryId} aplicada, mas falhou o log auxiliar: ${error?.message || error}`);
+    }
+    this.ordersGateway.emitDeliveryUpdated(
+      DeliveryResult.fromEntity(updated), updated.establishment?.cityId,
+    );
+    this.logger.warn(`REGULARIZACAO_IFOOD_EXTERNA deliveryId=${deliveryId} adminId=${admin.id} orderId=${orderId} merchantId=${merchantId}. Sem confirmação API e sem envio ao iFood.`);
     return DeliveryResult.fromEntity(updated);
   }
 
@@ -2505,6 +2626,10 @@ export class DeliveryService implements OnModuleInit {
       manualFinishedAt: data.manualFinishedAt ?? null,
       manualFinishedReason: data.manualFinishedReason ?? null,
       manualFinishedIfoodStatus: data.manualFinishedIfoodStatus ?? null,
+      manualFinishedMode: data.manualFinishedMode ?? null,
+      manualFinishedEvidenceReference: data.manualFinishedEvidenceReference ?? null,
+      manualFinishedEvidenceDescription: data.manualFinishedEvidenceDescription ?? null,
+      manualFinishedIfoodDisplayId: data.manualFinishedIfoodDisplayId ?? null,
       ifoodAssignDriverSynced: data.ifoodAssignDriverSynced ?? false,
       ifoodGoingToOriginSynced: data.ifoodGoingToOriginSynced ?? false,
       ifoodArrivedAtOriginSynced: data.ifoodArrivedAtOriginSynced ?? false,
