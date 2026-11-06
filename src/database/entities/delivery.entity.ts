@@ -161,19 +161,6 @@ export class DeliveryEntity {
   @Column({ nullable: true })
   manualFinishedIfoodStatus?: string;
 
-  /** Registro da exceção; nunca confundir com confirmação da API do iFood. */
-  @Column({ nullable: true })
-  manualFinishedMode?: 'EVENTO_IFOOD_VERIFICADO' | 'COMPROVACAO_EXTERNA_SUPERADMIN';
-
-  @Column({ nullable: true })
-  manualFinishedEvidenceReference?: string;
-
-  @Column({ nullable: true })
-  manualFinishedEvidenceDescription?: string;
-
-  @Column({ nullable: true })
-  manualFinishedIfoodDisplayId?: string;
-
   @Column({ default: false })
   ifoodAssignDriverSynced?: boolean;
 

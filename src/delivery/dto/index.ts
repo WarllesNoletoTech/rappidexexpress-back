@@ -10,5 +10,3 @@ export * from './delivery-result.dto';
 export * from './list-deliverys-result';
 
 export * from './release-delivery.dto';
-
-export * from './manual-ifood-reconciliation.dto';
