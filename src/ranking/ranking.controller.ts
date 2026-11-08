@@ -8,6 +8,12 @@ import { RankingService } from './ranking.service';
 @Controller('ranking')
 export class RankingController {
   constructor(private readonly service:RankingService) {}
+  @Get('my-notifications')
+  pendingNotifications(@User() user: UserRequest) { return this.service.unreadNotifications(user); }
+  @Post('my-notifications/:pointId/ack')
+  acknowledgeNotification(@User() user: UserRequest, @Param('pointId') pointId: string) {
+    return this.service.acknowledgeNotification(user, pointId);
+  }
   @Get(':cityId')
   board(@Param('cityId') id:string,@User() user:UserRequest,@Query('week') week?:string) {
     return this.service.leaderboard(id,user,week);

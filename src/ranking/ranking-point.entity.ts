@@ -15,6 +15,9 @@ export class RankingPointEntity {
   @Column() awardedBy: string;
   @Column() awardedAt: Date;
   @Column({ nullable: true }) note?: string;
+  // Somente novos lancamentos recebem notificacao; registros historicos permanecem intactos.
+  @Column({ nullable: true }) notificationStatus?: 'pending' | 'read';
+  @Column({ nullable: true }) notificationReadAt?: Date;
   @Column({ nullable: true }) reversedAt?: Date;
   @Column({ nullable: true }) reversedBy?: string;
 }

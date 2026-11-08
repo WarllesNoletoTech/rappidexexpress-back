@@ -121,7 +121,7 @@ export class RankingService {
     if (String(data.note||'').length > 500) throw new BadRequestException('Observação muito longa.');
     return this.points.save({ id:uuid(), cityId, motoboyId:motoboy.id, motoboyName:motoboy.name,
       ruleId:rule.id, ruleTitleSnapshot:rule.title, points:data.points, weekStart:weekStartBelem(),
-      awardedBy:user.id, awardedAt:new Date(), note:String(data.note||'').trim() });
+      awardedBy:user.id, awardedAt:new Date(), note:String(data.note||'').trim(), notificationStatus:'pending' });
   }
   async reverse(cityId:string,id:string,user:UserRequest) {
     await this.access(cityId,user,true);
@@ -135,6 +135,38 @@ export class RankingService {
     if (!result.modifiedCount) throw new BadRequestException('Pontuação já estornada por outro administrador.');
     return {success:true};
   }
+  // Nao recebe ID de entregador do cliente: identidade vem exclusivamente do JWT.
+  async unreadNotifications(user: UserRequest) {
+    if (user.type !== UserType.MOTOBOY) throw new UnauthorizedException('Disponivel apenas para entregadores.');
+    const items = await this.points.find({
+      where: { motoboyId: user.id, cityId: user.cityId, notificationStatus: 'pending' },
+      order: { awardedAt: 'ASC' },
+    });
+    return items.filter(item => !item.reversedAt).slice(0, 20).map(item => ({
+      id: item.id,
+      ruleTitle: item.ruleTitleSnapshot,
+      points: item.points,
+      note: item.note || '',
+      awardedAt: item.awardedAt,
+      weekStart: item.weekStart,
+    }));
+  }
+
+  async acknowledgeNotification(user: UserRequest, pointId: string) {
+    if (user.type !== UserType.MOTOBOY) throw new UnauthorizedException('Disponivel apenas para entregadores.');
+    const existing = await this.points.findOne({
+      where: { id: pointId, motoboyId: user.id, cityId: user.cityId },
+    });
+    if (!existing) throw new NotFoundException('Aviso nao encontrado.');
+    if (existing.notificationStatus !== 'pending' || existing.reversedAt) return { success: true };
+    // Atualizacao condicional impede que um reconhecimento concorrente reabra um aviso.
+    await this.points.updateOne(
+      { id: pointId, motoboyId: user.id, cityId: user.cityId, notificationStatus: 'pending', reversedAt: { $exists: false } },
+      { $set: { notificationStatus: 'read', notificationReadAt: new Date() } },
+    );
+    return { success: true };
+  }
+
   async leaderboard(cityId:string,user:UserRequest,day?:string,includeAll=false) {
     await this.access(cityId,user);
     const start = parseRankingWeek(day);
