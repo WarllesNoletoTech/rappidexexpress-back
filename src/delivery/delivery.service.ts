@@ -78,7 +78,7 @@ type CreateDeliveryOptions = {
 @Injectable()
 export class DeliveryService implements OnModuleInit {
   private readonly logger = new Logger(DeliveryService.name);
-  motoboysDeliveriesAmount = 2;
+  private readonly defaultMaxConcurrentDeliveries = 2;
   blockDeliverys = false;
   constructor(
     @InjectRepository(UserEntity)
@@ -1406,9 +1406,12 @@ export class DeliveryService implements OnModuleInit {
 
         const deliveriesForMotoboy = await this.deliveryRepository.count(where);
 
-        if (deliveriesForMotoboy >= this.motoboysDeliveriesAmount) {
+        // Usa a cidade da entrega, nunca um limite global compartilhado.
+        const deliveryCityId = deliveryFinded.establishment?.cityId || userFinded.cityId;
+        const maxDeliveries = await this.getMaxConcurrentDeliveriesForCity(deliveryCityId);
+        if (deliveriesForMotoboy >= maxDeliveries) {
           throw new BadRequestException(
-            `Você não pode pegar mais do que ${this.motoboysDeliveriesAmount} solicitações.`,
+            `Você não pode pegar mais do que ${maxDeliveries} solicitações nesta cidade.`,
           );
         }
         motoboyFinded = userFinded;
@@ -2264,10 +2267,49 @@ export class DeliveryService implements OnModuleInit {
     return user;
   }
 
-  async findConfigs() {
+  private normalizeMaxConcurrentDeliveries(value: number | undefined | null): number {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 50
+      ? value
+      : this.defaultMaxConcurrentDeliveries;
+  }
+
+  private async getMaxConcurrentDeliveriesForCity(cityId: string): Promise<number> {
+    if (!cityId || !ObjectId.isValid(cityId)) {
+      throw new BadRequestException('Cidade inválida para limite de entregas.');
+    }
+    const city = await this.cityRepository.findOne({
+      where: { _id: new ObjectId(cityId) },
+    });
+    if (!city) {
+      throw new BadRequestException('Cidade não encontrada para configurar as entregas.');
+    }
+    return this.normalizeMaxConcurrentDeliveries(city.maxConcurrentDeliveries);
+  }
+
+  private async getCurrentAdminCityId(user: UserRequest): Promise<string> {
+    // Lê a cidade atual do banco, pois a seleção do superadmin pode mudar
+    // depois que o JWT foi emitido.
+    const currentUser = await this.findOneUserById(user.id);
+    if (currentUser.type !== UserType.ADMIN && currentUser.type !== UserType.SUPERADMIN) {
+      throw new UnauthorizedException('Apenas administradores podem configurar entregas.');
+    }
+    if (!currentUser.cityId || !ObjectId.isValid(currentUser.cityId)) {
+      throw new BadRequestException('Selecione uma cidade na aba Cidades antes de configurar o limite.');
+    }
+    return currentUser.cityId;
+  }
+
+  async findConfigs(user: UserRequest) {
+    const cityId = await this.getCurrentAdminCityId(user);
+    const city = await this.cityRepository.findOne({ where: { _id: new ObjectId(cityId) } });
+    if (!city) {
+      throw new BadRequestException('A cidade selecionada não foi encontrada.');
+    }
     return {
       status: 200,
-      amount: this.motoboysDeliveriesAmount,
+      cityId,
+      cityName: city.name,
+      amount: this.normalizeMaxConcurrentDeliveries(city.maxConcurrentDeliveries),
       blockDeliverys: this.blockDeliverys,
     };
   }
@@ -2411,18 +2453,33 @@ export class DeliveryService implements OnModuleInit {
     );
   }
 
-  async changeConfigs(configs: ConfigsDto) {
-    if (configs.amountDeliverys) {
-      this.motoboysDeliveriesAmount = parseInt(configs.amountDeliverys);
+  async changeConfigs(configs: ConfigsDto, user: UserRequest) {
+    if (configs.amountDeliverys !== undefined) {
+      const textValue = String(configs.amountDeliverys).trim();
+      const maxConcurrentDeliveries = Number(textValue);
+      if (!/^\d+$/.test(textValue) || !Number.isInteger(maxConcurrentDeliveries) ||
+          maxConcurrentDeliveries < 1 || maxConcurrentDeliveries > 50) {
+        throw new BadRequestException('Informe um limite inteiro entre 1 e 50 entregas.');
+      }
+      const cityId = await this.getCurrentAdminCityId(user);
+      // Atualização pontual evita sobrescrever campos da cidade alterados por outro admin.
+      const result = await this.cityRepository.updateOne(
+        { _id: new ObjectId(cityId) },
+        { $set: { maxConcurrentDeliveries } },
+      );
+      if (!result.matchedCount) {
+        throw new BadRequestException('Cidade não encontrada para salvar o limite.');
+      }
     }
 
+    // Preserva o comportamento já existente do controle de bloqueio global.
     if (configs.blockDeliverys) {
       this.blockDeliverys = !this.blockDeliverys;
     }
 
     return {
       status: 200,
-      message: 'Configurações foram alterada com sucesso.',
+      message: 'Configurações alteradas com sucesso.',
     };
   }
 

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ObjectId } from 'mongodb';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DeliveryService } from './delivery.service';
 import {
@@ -26,6 +27,7 @@ describe('DeliveryService', () => {
   let ifoodEventService: any;
   let userRepository: any;
   let deliveryRepository: any;
+  let cityRepository: any;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -68,6 +70,7 @@ describe('DeliveryService', () => {
           provide: getRepositoryToken(CityEntity),
           useValue: {
             findOne: jest.fn(),
+            updateOne: jest.fn(),
           },
         },
         {
@@ -125,6 +128,65 @@ describe('DeliveryService', () => {
     ifoodEventService = module.get(IfoodEventService);
     userRepository = module.get(getRepositoryToken(UserEntity));
     deliveryRepository = module.get(getRepositoryToken(DeliveryEntity));
+    cityRepository = module.get(getRepositoryToken(CityEntity));
+  });
+
+  describe('limite simultâneo independente por cidade', () => {
+    const cityA = new ObjectId().toHexString();
+    const cityB = new ObjectId().toHexString();
+    const adminA = { id: 'admin-A', type: UserType.ADMIN, cityId: cityA };
+    const adminB = { id: 'admin-B', type: UserType.ADMIN, cityId: cityB };
+    const superAdmin = { id: 'super', type: UserType.SUPERADMIN, cityId: cityB };
+
+    let cities: Map<string, any>;
+    beforeEach(() => {
+      cities = new Map([
+        [cityA, { name: 'Cidade A', maxConcurrentDeliveries: 3 }],
+        [cityB, { name: 'Cidade B' }],
+      ]);
+      userRepository.findOneBy.mockImplementation(({ id }) =>
+        Promise.resolve(({ 'admin-A': adminA, 'admin-B': adminB, super: superAdmin } as any)[id] ?? null),
+      );
+      cityRepository.findOne.mockImplementation(({ where }) =>
+        Promise.resolve(cities.get(String(where._id)) ?? null),
+      );
+      cityRepository.updateOne.mockImplementation(({ _id }, { $set }) => {
+        const id = String(_id);
+        if (!cities.has(id)) return Promise.resolve({ matchedCount: 0 });
+        cities.set(id, { ...cities.get(id), ...$set });
+        return Promise.resolve({ matchedCount: 1 });
+      });
+    });
+
+    it('consulta os limites de cada cidade e usa 2 como padrão legado', async () => {
+      expect((await service.findConfigs(adminA as any)).amount).toBe(3);
+      expect((await service.findConfigs(adminB as any)).amount).toBe(2);
+    });
+
+    it('alterar Cidade A não muda Cidade B', async () => {
+      await service.changeConfigs({ amountDeliverys: '5' } as any, adminA as any);
+      expect((await service.findConfigs(adminA as any)).amount).toBe(5);
+      expect((await service.findConfigs(adminB as any)).amount).toBe(2);
+    });
+
+    it('usa a cidade atual persistida, não o cityId antigo do JWT', async () => {
+      const staleTokenUser = { ...superAdmin, cityId: cityA };
+      await service.changeConfigs({ amountDeliverys: '4' } as any, staleTokenUser as any);
+      expect(cities.get(cityB).maxConcurrentDeliveries).toBe(4);
+      expect(cities.get(cityA).maxConcurrentDeliveries).toBe(3);
+    });
+
+    it('não aceita valores zero, negativos, fracionários ou maiores que 50', async () => {
+      for (const bad of ['0', '-1', '1.5', '51', 'abc']) {
+        await expect(service.changeConfigs({ amountDeliverys: bad } as any, adminA as any))
+          .rejects.toThrow();
+      }
+    });
+
+    it('motoboy respeita o limite persistido da cidade da entrega', async () => {
+      expect(await (service as any).getMaxConcurrentDeliveriesForCity(cityA)).toBe(3);
+      expect(await (service as any).getMaxConcurrentDeliveriesForCity(cityB)).toBe(2);
+    });
   });
 
   describe('finalização LOCAL excepcional do iFood (só SUPERADMIN)', () => {

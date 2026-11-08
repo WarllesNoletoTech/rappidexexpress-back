@@ -34,6 +34,11 @@ export class CityEntity {
   @Column({ nullable: true })
   neighborhoods?: Array<{ id: string; name: string; active: boolean; deliveryFee?: number; motoboyFee?: number; aliases?: string[] }>;
 
+  // Limite máximo de entregas ativas por motoboy nesta cidade.
+  // Cidades legadas sem esta propriedade usam o padrão de 2.
+  @Column({ nullable: true })
+  maxConcurrentDeliveries?: number;
+
   @Column({ nullable: true })
   deliveryValue?: string;
 

@@ -89,6 +89,7 @@ export class CityService {
       platformServiceFee: 0,
       feeModeActivatedAt: data.feeMode === 'neighborhood' ? new Date(Date.now() - 3 * 60 * 60 * 1000) : undefined,
       neighborhoods: [],
+      maxConcurrentDeliveries: 2,
       deliveryValue: data.deliveryValue?.trim() || '', 
       deliveryFeeValue: this.normalizeCurrencyValue(data.deliveryFeeValue),
       monthlyFeeValue: this.normalizeCurrencyValue(data.monthlyFeeValue),

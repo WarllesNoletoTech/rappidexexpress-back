@@ -28,6 +28,9 @@ export class CityResult {
   @Expose()
 
   @Expose()
+  maxConcurrentDeliveries?: number;
+
+  @Expose()
   deliveryValue?: string;
 
   @Expose()
@@ -57,6 +60,7 @@ export class CityResult {
       feeMode: city.feeMode || 'fixed',
       platformServiceFee: 0,
       neighborhoodCount: city.neighborhoods?.length ?? 0,
+      maxConcurrentDeliveries: city.maxConcurrentDeliveries ?? 2,
       deliveryValue: city.deliveryValue,
       deliveryFeeValue: city.deliveryFeeValue,
       monthlyFeeValue: city.monthlyFeeValue,

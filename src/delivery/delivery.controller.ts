@@ -241,7 +241,7 @@ export class DeliveryController {
         'Você não tem permissão para esse recurso.',
       );
     }
-    return await this.deliveryService.changeConfigs(data);
+    return await this.deliveryService.changeConfigs(data, user);
   }
 
   @Get('config')
@@ -260,7 +260,7 @@ export class DeliveryController {
         'Você não tem permissão para esse recurso.',
       );
     }
-    return await this.deliveryService.findConfigs();
+    return await this.deliveryService.findConfigs(user);
   }
 
   @Patch(':deliveryId/arrived-at-store')
