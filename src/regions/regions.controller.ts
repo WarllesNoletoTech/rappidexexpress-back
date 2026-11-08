@@ -13,8 +13,8 @@ export class RegionsController {
   list(@Param('cityId') id: string, @User() user: UserRequest) { return this.service.list(id, user); }
 
   @Get(':cityId/neighborhoods/municipalities')
-  municipalities(@Param('cityId') id: string, @Query('q') searchTerm: string, @User() user: UserRequest) {
-    return this.service.municipalityOptions(id, user, searchTerm);
+  municipalities(@Param('cityId') id: string, @Query('q') searchTerm: string, @Query('provider') provider: string, @User() user: UserRequest) {
+    return this.service.municipalityOptions(id, user, searchTerm, provider);
   }
 
   @Get(':cityId/neighborhoods/suggestions')

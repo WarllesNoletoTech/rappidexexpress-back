@@ -57,7 +57,7 @@ export function buildOsmQuery(region: MunicipalityResult, mode: 'area' | 'bbox')
     location = `(${south},${west},${north},${east})`;
   }
   const place = '^(neighbourhood|suburb|quarter)$';
-  return `[out:json][timeout:25];(node["place"~"${place}"]${location};way["place"~"${place}"]${location};relation["place"~"${place}"]${location};relation["boundary"="administrative"]["admin_level"~"^(9|10)$"]${location};);out tags;`;
+  return `[out:json][timeout:20];(node["place"~"${place}"]${location};way["place"~"${place}"]${location};relation["place"~"${place}"]${location};relation["boundary"="administrative"]["admin_level"~"^(9|10)$"]${location};);out center;`;
 }
 
 export function extractNeighborhoodNames(elements: unknown, city: string): string[] {

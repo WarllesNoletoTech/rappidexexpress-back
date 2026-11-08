@@ -6,7 +6,8 @@ import { MongoRepository } from 'typeorm';
 import { ObjectId } from 'mongodb';
 import { v4 as uuid } from 'uuid';
 import axios from 'axios';
-import { buildOsmQuery, chooseMunicipality, extractNeighborhoodNames, isBrazilianMunicipality, osmMunicipalityKey, stateNameFromCode } from './neighborhood-import';
+import { buildOsmQuery, chooseMunicipality, extractNeighborhoodNames, isBrazilianMunicipality, osmMunicipalityKey, stateNameFromCode, MunicipalityResult } from './neighborhood-import';
+import { IbgeMunicipality, MunicipalBoundary, ibgeState, findIbgeMunicipalities, municipalBoundaryFromGeoJson, filterElementsToMunicipality } from './municipality-ibge';
 import { CityEntity } from '../database/entities/city.entity';
 import { UserEntity } from '../database/entities/user.entity';
 import { DeliveryEntity } from '../database/entities/delivery.entity';
@@ -41,6 +42,7 @@ export function amount(value: unknown) {
 export class RegionsService {
   private readonly importCache = new Map<string, {expires: number; names: string[]; warning: string; sourceLabel?: string}>();
   private readonly autoImportInProgress = new Map<string, Promise<any>>();
+  private readonly municipalityCache = new Map<string, {expires:number; rows:IbgeMunicipality[]}>();
   constructor(
     @InjectRepository(CityEntity) private readonly cities: MongoRepository<CityEntity>,
     @InjectRepository(UserEntity) private readonly users: MongoRepository<UserEntity>,
@@ -71,53 +73,98 @@ export class RegionsService {
     return { cityId, feeMode: city.feeMode || 'fixed', platformServiceFee: city.platformServiceFee ?? 0, neighborhoods: city.neighborhoods || [], sourceOsmId: city.neighborhoodOsmSourceId, sourceLabel: city.neighborhoodOsmSourceLabel };
   }
 
-  // Escolha explícita da cidade de origem no mapa. O servidor valida as
-  // opções e nunca utiliza coordenadas enviadas pelo navegador.
-  async municipalityOptions(cityId: string, user: UserRequest, searchTerm?: string) {
+  // Seleção de município pelo IBGE. Se a API estiver indisponível, Nominatim
+  // fica como alternativa. As duas opções exigem confirmação do administrador.
+  async municipalityOptions(cityId: string, user: UserRequest, searchTerm?: string, provider?: string) {
     this.ensureAdmin(user, cityId);
     const city = await this.city(cityId);
-    const query = String(searchTerm || `${city.name}, ${stateNameFromCode(city.state || '')}, Brasil`).trim();
+    const uf = String(city.state || '').trim().toUpperCase();
+    const query = String(searchTerm || `${city.name}, ${stateNameFromCode(uf)}, Brasil`).trim();
     if (query.length < 2 || query.length > 100) throw new BadRequestException('Informe de 2 a 100 caracteres para buscar a cidade.');
+    // Normalmente a cidade já tem UF cadastrada. O IBGE retorna municípios
+    // oficiais daquela UF e dispensa pesquisa livre no Nominatim.
+    if (provider !== 'osm' && /^[A-Z]{2}$/.test(uf)) {
+      try {
+        let rows = this.municipalityCache.get(uf);
+        if (!rows || rows.expires <= Date.now()) {
+          const response = await axios.get(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`, {
+            timeout: 7000, headers: {'User-Agent':'RappidexExpress/1.0 (https://rappidexexpress.vercel.app)'},
+            maxContentLength: 4_000_000,
+          });
+          if (!Array.isArray(response.data)) throw new Error('Resposta inválida da API IBGE');
+          rows = {expires: Date.now()+12*3600_000, rows: response.data};
+          this.municipalityCache.set(uf, rows);
+        }
+        const options = findIbgeMunicipalities(rows.rows, query, uf);
+        if (options.length) return {options, source:'IBGE',
+          warning:'Município identificado pelo IBGE. Os nomes dos bairros serão consultados no OpenStreetMap e devem ser revisados.'};
+      } catch (_e) { /* Usa Nominatim apenas como contingência. */ }
+    }
     try {
       const response = await axios.get('https://nominatim.openstreetmap.org/search', {
-        params: {q: query, format: 'jsonv2', limit: 15, addressdetails: 1, countrycodes: 'br'},
-        headers: {'User-Agent': 'RappidexExpress-Server/1.0 (city selection)', 'Accept-Language': 'pt-BR'},
-        timeout: 8000,
+        params: {q: query, format:'jsonv2', limit:10, addressdetails:1, countrycodes:'br'},
+        headers: {'User-Agent':'RappidexExpress/1.0 (https://rappidexexpress.vercel.app)', 'Accept-Language':'pt-BR'},
+        timeout:7000,
       });
       const options = (Array.isArray(response.data) ? response.data : [])
-        .filter((result: any) => isBrazilianMunicipality(result))
-        .map((result: any) => ({
-          id: osmMunicipalityKey(result),
-          name: result.address?.city || result.address?.town || result.address?.municipality ||
-            result.address?.village || result.name || String(result.display_name || '').split(',')[0],
-          state: result.address?.state || '',
-          label: String(result.display_name || result.name || ''),
-        }))
-        .filter((item: any) => item.id && item.name && item.label);
-      const unique = [...new Map(options.map((item: any) => [item.id, item])).values()];
-      return {options: unique, warning: 'Selecione a cidade e confira o estado antes de importar; a lista de bairros do OpenStreetMap pode ser incompleta.'};
-    } catch (error) {
-      if (error instanceof BadRequestException) throw error;
-      return {options: [], warning: 'O serviço de busca de cidades não respondeu. Tente novamente ou cadastre os bairros manualmente.'};
+        .filter((result:any)=>isBrazilianMunicipality(result))
+        .map((result:any)=>({
+          id:osmMunicipalityKey(result),
+          name:result.address?.city||result.address?.town||result.address?.municipality||result.address?.village||result.name||'',
+          state:result.address?.state||'',label:String(result.display_name||result.name||''),
+        })).filter((item:any)=>item.id&&item.name&&item.label);
+      return {options:[...new Map(options.map((x:any)=>[x.id,x])).values()],source:'OpenStreetMap',
+        warning:options.length ? 'Resultados do OpenStreetMap. Confirme a cidade/estado antes de sincronizar.' :
+          'Nenhuma cidade encontrada nas fontes consultadas. Verifique o nome e a UF cadastrados.'};
+    } catch (_e) {
+      return {options:[],source:'indisponível',
+        warning:'Não foi possível consultar o IBGE nem o OpenStreetMap. Confira a conexão externa do Heroku e tente novamente.'};
     }
   }
 
-  private async selectedMunicipality(sourceOsmId: string) {
-    if (!/^[RNW][1-9]\d{0,13}$/.test(sourceOsmId)) throw new BadRequestException('Cidade de origem inválida.');
+  private async selectedMunicipality(sourceId: string): Promise<{
+    region:MunicipalityResult; boundary?:MunicipalBoundary; sourceLabel:string;
+  }> {
+    // A malha municipal oficial do IBGE permite eliminar bairros de cidades
+    // vizinhas que estejam dentro do mesmo retângulo da consulta Overpass.
+    if (/^I\d{7}$/.test(sourceId)) {
+      const id=sourceId.slice(1);
+      try {
+        const municipality = await axios.get(`https://servicodados.ibge.gov.br/api/v1/localidades/municipios/${id}`, {
+          timeout:6500, headers:{'User-Agent':'RappidexExpress/1.0 (https://rappidexexpress.vercel.app)'},
+        });
+        const m:IbgeMunicipality=municipality.data;
+        if (String(m?.id)!==id || !m?.nome || !ibgeState(m))
+          throw new BadRequestException('O município escolhido não foi confirmado pelo IBGE.');
+        const geo = await axios.get(`https://servicodados.ibge.gov.br/api/v3/malhas/municipios/${id}`, {
+          params:{formato:'application/vnd.geo+json',qualidade:'minima'},
+          timeout:8000, maxContentLength:6_000_000,
+          headers:{'User-Agent':'RappidexExpress/1.0 (https://rappidexexpress.vercel.app)', 'Accept':'application/vnd.geo+json, application/json'},
+        });
+        const data=typeof geo.data==='string'?JSON.parse(geo.data):geo.data;
+        const boundary=municipalBoundaryFromGeoJson(data);
+        if (!boundary) throw new BadRequestException('O IBGE não retornou o limite geográfico válido dessa cidade.');
+        const sourceLabel=`${m.nome} — ${ibgeState(m)} (IBGE)`;
+        return {region:{osm_type:'ibge',osm_id:id,boundingbox:boundary.boundingbox,display_name:sourceLabel},boundary,sourceLabel};
+      } catch(e) {
+        if (e instanceof BadRequestException) throw e;
+        throw new BadRequestException('A API do IBGE não respondeu corretamente ao consultar a malha municipal. Tente novamente.');
+      }
+    }
+    if (!/^[RNW][1-9]\d{0,13}$/.test(sourceId)) throw new BadRequestException('Cidade de origem inválida.');
     try {
       const response = await axios.get('https://nominatim.openstreetmap.org/lookup', {
-        params: {osm_ids: sourceOsmId, format: 'jsonv2', addressdetails: 1},
-        headers: {'User-Agent': 'RappidexExpress-Server/1.0 (city selection)', 'Accept-Language': 'pt-BR'},
-        timeout: 8000,
+        params:{osm_ids:sourceId,format:'jsonv2',addressdetails:1},
+        headers:{'User-Agent':'RappidexExpress/1.0 (https://rappidexexpress.vercel.app)', 'Accept-Language':'pt-BR'},
+        timeout:7500,
       });
-      const result = Array.isArray(response.data) ? response.data[0] : null;
-      if (!isBrazilianMunicipality(result) || osmMunicipalityKey(result) !== sourceOsmId) {
-        throw new BadRequestException('A cidade selecionada não é um município brasileiro válido.');
-      }
-      return result;
-    } catch (error) {
-      if (error instanceof BadRequestException) throw error;
-      throw new BadRequestException('Não foi possível confirmar a cidade de origem no mapa. Repita a pesquisa.');
+      const region=Array.isArray(response.data)?response.data[0]:null;
+      if (!isBrazilianMunicipality(region)||osmMunicipalityKey(region)!==sourceId)
+        throw new BadRequestException('Cidade selecionada não é um município brasileiro válido.');
+      return {region,sourceLabel:String(region.display_name||region.name||'').slice(0,250)};
+    } catch(e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new BadRequestException('Não foi possível confirmar a cidade no OpenStreetMap. Use a opção IBGE ou tente novamente.');
     }
   }
 
@@ -129,14 +176,17 @@ export class RegionsService {
     const cacheKey = `${cityId}|${sourceOsmId || 'automatic'}`;
     const cached = this.importCache.get(cacheKey);
     if (cached && cached.expires > Date.now()) {
-      return { source: 'OpenStreetMap', names: cached.names, complete: false, warning: cached.warning, sourceLabel: cached.sourceLabel };
+      return { source: 'OpenStreetMap/IBGE', names: cached.names, complete: false, warning: cached.warning, sourceLabel: cached.sourceLabel };
     }
-    const source = 'OpenStreetMap';
+    const source = 'OpenStreetMap/IBGE';
     const warning = 'Os dados do OpenStreetMap podem estar incompletos. Confira os bairros, edite os nomes e inclua os que faltarem.';
     try {
-      let region;
+      let region:MunicipalityResult;
+      let boundary:MunicipalBoundary | undefined;
+      let confirmedLabel:string | undefined;
       if (sourceOsmId) {
-        region = await this.selectedMunicipality(sourceOsmId);
+        const selected=await this.selectedMunicipality(sourceOsmId);
+        region=selected.region; boundary=selected.boundary; confirmedLabel=selected.sourceLabel;
       } else {
         const geocoding = await axios.get('https://nominatim.openstreetmap.org/search', {
           params: { q: `${city.name}, ${stateNameFromCode(city.state || '')}, Brasil`, format: 'jsonv2', limit: 8,
@@ -148,47 +198,59 @@ export class RegionsService {
       }
       if (!region) {
         const warn = 'Não foi possível localizar com segurança o limite municipal. Cadastre os bairros manualmente ou tente novamente mais tarde.';
-        this.importCache.set(cacheKey, { expires: Date.now() + 10 * 60_000, names: [], warning: warn });
+        // Não cacheia resultados vazios para permitir retentativa.
         return {source, names: [], complete: false, warning: warn};
       }
-      const sourceLabel = String(region.display_name || region.name || '').slice(0,250);
+      const sourceLabel = confirmedLabel || String(region.display_name || region.name || '').slice(0,250);
+      // Endpoint atual da instância Private.coffee e segunda fonte pública.
+      // A antiga URL overpass.kumi.systems foi substituída pelo provedor.
       const endpoints = [
+        'https://overpass.private.coffee/api/interpreter',
         'https://overpass-api.de/api/interpreter',
-        'https://overpass.kumi.systems/api/interpreter',
       ];
-      // Se a área municipal não existir no Overpass, tenta o retângulo do
-      // município geocodificado. Nenhum dos dois métodos garante 100% de cobertura.
       let names: string[] = [];
       let hadSuccess = false;
+      let serviceFailure = '';
       for (const mode of ['area', 'bbox'] as const) {
         if (mode === 'area' && region.osm_type !== 'relation') continue;
         const query = buildOsmQuery(region, mode);
         if (!query) continue;
-        // Os espelhos respondem em paralelo para não exceder o timeout HTTP
-        // do Heroku (30s). O primeiro resultado com bairros é utilizado.
         const attempts = endpoints.map(async endpoint => {
-          const response = await axios.post(endpoint, new URLSearchParams({data: query}).toString(), {
-            headers: {'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'RappidexExpress-Server/1.0'},
-            timeout: 10000, maxContentLength: 5_000_000,
-          });
-          hadSuccess = true;
-          const found = extractNeighborhoodNames(response.data?.elements, city.name);
-          if (!found.length) throw new Error('Sem bairros mapeados nesta fonte.');
-          return found;
+          try {
+            const response = await axios.post(endpoint, new URLSearchParams({data: query}).toString(), {
+              headers:{'Content-Type':'application/x-www-form-urlencoded',
+                'User-Agent':'RappidexExpress/1.0 (https://rappidexexpress.vercel.app)'},
+              timeout:10500,maxContentLength:6_000_000,
+            });
+            if (response.data?.remark) throw new Error(`Overpass: ${String(response.data.remark).slice(0,80)}`);
+            if (!Array.isArray(response.data?.elements)) throw new Error('Resposta Overpass sem elementos válidos');
+            hadSuccess = true;
+            // Quando o município veio do IBGE, filtra centroides pelo polígono
+            // da malha municipal para evitar importar bairros vizinhos.
+            const elements = boundary ? filterElementsToMunicipality(response.data.elements,boundary) : response.data.elements;
+            const found = extractNeighborhoodNames(elements,city.name);
+            if (!found.length) throw new Error('Nenhum bairro mapeado nesta consulta');
+            return found;
+          } catch(e:any) {
+            const status=e?.response?.status;
+            if(status===429) serviceFailure='O servidor de mapas limitou as consultas (HTTP 429).';
+            else if(status>=500) serviceFailure=`O servidor de mapas falhou (HTTP ${status}).`;
+            else if(e?.code==='ECONNABORTED')serviceFailure='A consulta aos mapas excedeu o tempo limite.';
+            throw e;
+          }
         });
-        try { names = await Promise.any(attempts); }
-        catch (_error) { /* Tenta o modo bbox, se a consulta de área não encontrou bairros. */ }
+        try {names=await Promise.any(attempts);} catch (_e) { /* Tenta a próxima modalidade. */ }
         if (names.length) break;
       }
       const resultWarning = names.length ? warning : hadSuccess
-        ? 'A consulta foi concluída, mas não encontrou bairros mapeados nessa cidade. Você pode cadastrá-los manualmente.'
-        : 'Os serviços de mapas não responderam. É possível cadastrar manualmente e tentar sincronizar novamente.';
-      this.importCache.set(cacheKey, { expires: Date.now() + (names.length ? 6 * 3600_000 : 10 * 60_000), names, warning: resultWarning, sourceLabel });
+        ? 'A API respondeu, mas não encontrou bairros mapeados dentro dos limites dessa cidade. Adicione os bairros manualmente.'
+        : `${serviceFailure || 'Os servidores de mapas não responderam.'} Tente novamente mais tarde ou cadastre manualmente.`;
+      if (names.length) this.importCache.set(cacheKey, {expires:Date.now()+6*3600_000,names,warning:resultWarning,sourceLabel});
       return {source, names, complete: false, warning: resultWarning, sourceLabel};
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
       const warn = 'A consulta online não está disponível. É possível cadastrar bairros manualmente ou sincronizar depois.';
-      this.importCache.set(cacheKey, {expires: Date.now() + 10 * 60_000, names: [], warning: warn});
+      // Não cacheia falhas da API externa: uma nova tentativa pode funcionar.
       return {source, names: [], complete: false, warning: warn};
     }
   }
@@ -202,7 +264,7 @@ export class RegionsService {
     if (inProgress) return inProgress;
     const task = (async () => {
       const suggested = await this.suggestions(cityId, user, sourceOsmId);
-      if (sourceOsmId && suggested.sourceLabel) {
+      if (sourceOsmId && suggested.sourceLabel && suggested.names.length) {
         const city = await this.city(cityId);
         await this.cities.updateOne({_id: city.id}, {$set: {
           neighborhoodOsmSourceId: sourceOsmId, neighborhoodOsmSourceLabel: suggested.sourceLabel,
