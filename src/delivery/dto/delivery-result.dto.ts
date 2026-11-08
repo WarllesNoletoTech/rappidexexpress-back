@@ -31,6 +31,18 @@ export class DeliveryResult {
   addressNeighborhood?: string;
 
   @Expose()
+  neighborhoodDeliveryFee?: number;
+
+  @Expose()
+  platformServiceFee?: number;
+
+  @Expose()
+  establishmentDeliveryCharge?: number;
+
+  @Expose()
+  feeResolutionStatus?: string;
+
+  @Expose()
   addressCity?: string;
 
   @Expose()

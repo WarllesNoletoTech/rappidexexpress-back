@@ -51,6 +51,10 @@ export class UserEntity {
   @Column()
   cityId: string;
 
+  @Column({ nullable: true })
+  neighborhoodRates?: Array<{ neighborhoodId: string; enabled: boolean; deliveryFee: number }>;
+
+
   @Column()
   isActive: boolean;
 

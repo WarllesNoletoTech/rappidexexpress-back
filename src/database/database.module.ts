@@ -5,6 +5,8 @@ import { join } from 'path';
 import { DeliveryEntity, UserEntity } from './entities';
 import { CityEntity } from './entities/city.entity';
 import { CitySeedService } from './seeds/city-seed.service';
+import { RankingRuleEntity } from '../ranking/ranking-rule.entity';
+import { RankingPointEntity } from '../ranking/ranking-point.entity';
 
 @Module({
   imports: [
@@ -18,7 +20,7 @@ import { CitySeedService } from './seeds/city-seed.service';
         return {
           type: 'mongodb',
           url: configService.get<string>('MONGODB_URI'),
-          entities: [join(__dirname, '**/*.entity{.ts,.js}')],
+          entities: [join(__dirname, '**/*.entity{.ts,.js}'), RankingRuleEntity, RankingPointEntity],
           synchronize:
             !isProduction &&
             configService.get<string>('TYPEORM_SYNCHRONIZE') === 'true',

@@ -85,7 +85,11 @@ export class CityService {
       name: data.name,
       state: data.state,
       clientWhatsappMessage: data.clientWhatsappMessage?.trim() || '',
-      deliveryValue: data.deliveryValue?.trim() || '',
+      feeMode: data.feeMode === 'neighborhood' ? 'neighborhood' : 'fixed',
+      platformServiceFee: data.platformServiceFee ?? 0,
+      feeModeActivatedAt: data.feeMode === 'neighborhood' ? new Date(Date.now() - 3 * 60 * 60 * 1000) : undefined,
+      neighborhoods: [],
+      deliveryValue: data.deliveryValue?.trim() || '', 
       deliveryFeeValue: this.normalizeCurrencyValue(data.deliveryFeeValue),
       monthlyFeeValue: this.normalizeCurrencyValue(data.monthlyFeeValue),
       pixKey: data.pixKey?.trim() || '',
@@ -126,9 +130,23 @@ export class CityService {
 
     this.ensureAdminCityAccess(cityId, user);
 
+    if (data.feeMode && !['fixed', 'neighborhood'].includes(data.feeMode)) {
+      throw new UnauthorizedException('Modalidade de tarifa inválida.');
+    }
+    if (data.platformServiceFee !== undefined &&
+        (!Number.isFinite(data.platformServiceFee) || data.platformServiceFee < 0 || data.platformServiceFee > 100000 ||
+          Math.abs(Math.round(data.platformServiceFee * 100) - data.platformServiceFee * 100) > 1e-6)) {
+      throw new UnauthorizedException('Taxa de serviço inválida.');
+    }
     const updatedCity = await this.cityRepository.save({
       ...city,
       ...data,
+      feeMode: data.feeMode ?? city.feeMode ?? 'fixed',
+      // O histórico de entregas usa datas deslocadas UTC-3; manter mesma convenção no corte legado.
+      feeModeActivatedAt: data.feeMode === 'neighborhood' && city.feeMode !== 'neighborhood'
+        ? new Date(Date.now() - 3 * 60 * 60 * 1000)
+        : city.feeModeActivatedAt,
+      platformServiceFee: data.platformServiceFee ?? city.platformServiceFee ?? 0,
       clientWhatsappMessage:
         data.clientWhatsappMessage !== undefined
           ? data.clientWhatsappMessage.trim()

@@ -7,6 +7,8 @@ import { UserModule } from './user/user.module';
 import { AuthenticatorModule } from './authenticator/authenticator.module';
 import { DeliveryModule } from './delivery/delivery.module';
 import { CityModule } from './city/city.module';
+import { RegionsModule } from './regions/regions.module';
+import { RankingModule } from './ranking/ranking.module';
 import { IfoodModule } from './ifood/ifood.module';
 import { FinancialSettlementModule } from './financial-settlement/financial-settlement.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -25,6 +27,8 @@ import { MenuFlowIntegrationModule } from './menuflow-integration/menuflow-integ
     AuthenticatorModule,
     DeliveryModule,
     CityModule,
+    RegionsModule,
+    RankingModule,
     IfoodModule,
     FinancialSettlementModule,
     MenuFlowIntegrationModule,

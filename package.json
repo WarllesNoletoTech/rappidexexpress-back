@@ -18,6 +18,7 @@
     "create:admin": "node create-admin.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
+    "test:qa-offline": "node scripts/qa-offline.cjs",
     "test:ifood-homologation": "jest src/ifood/ifood-http.service.spec.ts src/ifood/ifood-polling.service.spec.ts src/ifood/ifood-webhook.controller.spec.ts src/ifood/ifood-auto-polling.service.spec.ts src/delivery/delivery.service.spec.ts",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",

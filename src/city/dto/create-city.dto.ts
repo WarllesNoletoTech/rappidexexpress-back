@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString, Length } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsString, Length, Max, Min } from 'class-validator';
 
 export class CreateCityDto {
   @IsString()
@@ -12,6 +12,16 @@ export class CreateCityDto {
   @IsString()
   @IsOptional()
   clientWhatsappMessage?: string;
+
+  @IsIn(['fixed', 'neighborhood'])
+  @IsOptional()
+  feeMode?: 'fixed' | 'neighborhood';
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100000)
+  @IsOptional()
+  platformServiceFee?: number;
 
   @IsString()
   @IsOptional()

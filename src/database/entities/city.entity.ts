@@ -16,6 +16,19 @@ export class CityEntity {
   clientWhatsappMessage?: string;
 
   @Column({ nullable: true })
+  feeMode?: 'fixed' | 'neighborhood';
+
+  // Taxa da plataforma apenas para o modo por bairro. Não substitui deliveryFeeValue (legado).
+  @Column({ nullable: true })
+  platformServiceFee?: number;
+
+  @Column({ nullable: true })
+  feeModeActivatedAt?: Date;
+
+  @Column({ nullable: true })
+  neighborhoods?: Array<{ id: string; name: string; active: boolean }>;
+
+  @Column({ nullable: true })
   deliveryValue?: string;
 
   @Column({ nullable: true })

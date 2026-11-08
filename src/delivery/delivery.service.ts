@@ -20,6 +20,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { MongoRepository } from 'typeorm';
 import { ObjectId } from 'mongodb';
 import { v4 as uuid } from 'uuid';
+import { RegionsService } from '../regions/regions.service';
 import { addHours } from 'date-fns';
 
 import {
@@ -89,6 +90,7 @@ export class DeliveryService implements OnModuleInit {
     @InjectRepository(CityEntity)
     private readonly cityRepository: MongoRepository<CityEntity>,
     private readonly ordersGateway: OrdersGateway,
+    private readonly regionsService: RegionsService,
     @Inject(forwardRef(() => IfoodOrdersService))
     private readonly ifoodOrdersService: IfoodOrdersService,
     @Inject(forwardRef(() => IfoodOrderLinkService))
@@ -1050,7 +1052,32 @@ export class DeliveryService implements OnModuleInit {
             : Promise.resolve(null),
         ]);
 
-      const valorAdminPorEntrega = this.getAdminDeliveryFeeValue(city);
+      const bairroMode = city?.feeMode === 'neighborhood';
+      const valorAdminPorEntrega = bairroMode ? Number(city.platformServiceFee || 0) : this.getAdminDeliveryFeeValue(city);
+      // Soma real por entrega, sem multiplicar tarifa fixa em cidades com bairros.
+      const isLegacy = city?.feeModeActivatedAt ? {
+        $and:[
+          {$eq:[{$ifNull:['$feeResolutionStatus',null]},null]},
+          {$lt:['$createdAt',city.feeModeActivatedAt]},
+        ],
+      } : {$literal:false};
+      const pricedSnapshot = {$in:['$feeResolutionStatus',['FIXED','RESOLVED']]};
+      const pendingSnapshot = {$eq:['$feeResolutionStatus','PENDING']};
+      const legacyFixed = bairroMode ? isLegacy : {$literal:true};
+      const chargeExpression = {$cond:[
+        pricedSnapshot,
+        {$ifNull:['$establishmentDeliveryCharge',0]},
+        {$cond:[pendingSnapshot,0,{$cond:[legacyFixed,Number(city?.deliveryFeeValue || 0),0]}]},
+      ]};
+      const pendingExpression = {$cond:[
+        pendingSnapshot,1,{$cond:[{$or:[pricedSnapshot,legacyFixed]},0,1]},
+      ]};
+      const neighborhoodTotals = city
+        ? await this.deliveryRepository.aggregate([
+          {$match:adminFinancialWhere},
+          {$group:{_id:null,total:{$sum:chargeExpression},pending:{$sum:pendingExpression}}},
+        ]).toArray()
+        : [];
 
       return {
         pending,
@@ -1058,7 +1085,9 @@ export class DeliveryService implements OnModuleInit {
         waitingRelease,
         totalEntregas,
         valorAdminPorEntrega,
-        totalValorAdmin: totalEntregas * valorAdminPorEntrega,
+        totalValorAdmin: city ? Number(neighborhoodTotals[0]?.total || 0) : totalEntregas * valorAdminPorEntrega,
+        feeMode: bairroMode ? 'neighborhood' : 'fixed',
+        pendingFeeCount: Number(neighborhoodTotals[0]?.pending || 0),
         cityId: city?.id?.toHexString?.() ?? countQueryParams.cityId ?? null,
         cityName: city?.name ?? null,
         createdIn: dateRange.createdIn,
@@ -1665,6 +1694,18 @@ export class DeliveryService implements OnModuleInit {
       onCoursedAt = addHours(new Date(), -3);
     }
 
+    const regionCity = await this.findCityEntityById(establishment.cityId);
+    // A integração externa não deve deixar de receber pedidos por cadastro legado da cidade.
+    const pricingSnapshot = regionCity
+      ? this.regionsService.calculate(regionCity, establishment, addressNeighborhood)
+      : {feeResolutionStatus: 'PENDING' as const};
+    // Não interromper a recepção de pedidos externos (iFood/Menu Flow) sem bairro.
+    // Pedidos manuais no modo por bairro exigem tarifa ativa configurada.
+    if (pricingSnapshot.feeResolutionStatus === 'PENDING' && !ifoodOrderId && !options?.menuFlow) {
+      throw new BadRequestException('Bairro não cadastrado ou desativado para esta loja. Configure a tarifa por bairro antes de solicitar entrega.');
+    }
+
+
     try {
       const deliveryId = uuid();
 
@@ -1678,6 +1719,7 @@ export class DeliveryService implements OnModuleInit {
       const menuFlow = options?.menuFlow;
 
       const newDelivery = await this.deliveryRepository.save({
+        ...pricingSnapshot,
         id: deliveryId,
         clientName,
         clientPhone,

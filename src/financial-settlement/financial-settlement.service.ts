@@ -24,6 +24,8 @@ type SettlementDelivery = {
   status: string;
   createdAt?: Date;
   finishedAt?: Date;
+  charge?: number;
+  neighborhood?: string;
 };
 
 type SettlementData = {
@@ -166,8 +168,27 @@ export class FinancialSettlementService {
       );
     }
 
-    const deliveryFeeValue = this.getDeliveryFeeValue(city);
-    if (deliveries.length && !deliveryFeeValue) {
+    const neighborhoodMode = city.feeMode === 'neighborhood';
+    // Entregas anteriores à ativação do modelo por bairro permanecem com a taxa fixa legada.
+    // Pedidos atuais sem bairro válido precisam ser regularizados, nunca receber tarifa inventada.
+    const chargeForDelivery = (delivery: DeliveryEntity): number => {
+      if (delivery.feeResolutionStatus === 'PENDING') return NaN;
+      if (Number.isFinite(delivery.establishmentDeliveryCharge) &&
+          ['FIXED', 'RESOLVED'].includes(delivery.feeResolutionStatus || '')) {
+        return Number(delivery.establishmentDeliveryCharge);
+      }
+      if (neighborhoodMode && !delivery.feeResolutionStatus && city.feeModeActivatedAt &&
+          new Date(delivery.createdAt).getTime() < new Date(city.feeModeActivatedAt).getTime()) {
+        return this.getDeliveryFeeValue(city);
+      }
+      if (!neighborhoodMode) return this.getDeliveryFeeValue(city);
+      return NaN;
+    };
+    if (deliveries.some(d => !Number.isFinite(chargeForDelivery(d)))) {
+      throw new BadRequestException('Existem entregas com tarifa pendente neste período, inclusive de modalidades anteriores. Regularize os pedidos antes de gerar o fechamento.');
+    }
+    const deliveryFeeValue = neighborhoodMode ? Number(city.platformServiceFee || 0) : this.getDeliveryFeeValue(city);
+    if (deliveries.length && !neighborhoodMode && !deliveryFeeValue) {
       throw new BadRequestException(
         'Valor da entrega não configurado para esta cidade.',
       );
@@ -183,7 +204,7 @@ export class FinancialSettlementService {
     const monthlyFeeValue = includeMonthlyFee
       ? this.getMonthlyFeeValue(city)
       : 0;
-    const totalDeliveries = deliveries.length * deliveryFeeValue;
+    const totalDeliveries = Math.round(deliveries.reduce((sum, d) => sum + chargeForDelivery(d), 0) * 100) / 100;
     const total = totalDeliveries + monthlyFeeValue;
     const establishmentName = this.resolveEstablishmentName(
       establishment,
@@ -199,6 +220,8 @@ export class FinancialSettlementService {
       status: delivery.status,
       createdAt: delivery.createdAt,
       finishedAt: delivery.finishedAt,
+      charge: chargeForDelivery(delivery),
+      neighborhood: delivery.addressNeighborhood || '', 
     }));
 
     const settlement: SettlementData = {
@@ -284,7 +307,10 @@ export class FinancialSettlementService {
       ? `\nMensalidade: ${this.formatCurrency(settlement.monthlyFeeValue)}`
       : '';
 
-    return `Olá, ${settlement.establishmentName}!\n\nSegue o fechamento das entregas realizadas pela Rappidex Express.\n\nCidade: ${this.formatCity(settlement.city)}\nPeríodo: ${this.formatDate(settlement.periodStart)} até ${this.formatDate(settlement.periodEnd)}\nQuantidade de entregas: ${settlement.deliveries.length}\nValor por entrega: ${this.formatCurrency(settlement.deliveryFeeValue)}\nTotal das entregas: ${this.formatCurrency(settlement.totalDeliveries)}${monthlyFeeLine}\nTotal a pagar: ${this.formatCurrency(settlement.total)}\n\nChave PIX para pagamento:\n${settlement.pixKey}\n\nO relatório em PDF foi gerado. Anexarei o arquivo nesta conversa.\n\nObrigado pela parceria!\nRappidex Express`;
+    const rateDescription = settlement.city.feeMode === 'neighborhood'
+      ? 'Cobrança: taxa do bairro configurada pela loja + taxa da Rappidex (valor por entrega variável)'
+      : `Valor por entrega: ${this.formatCurrency(settlement.deliveryFeeValue)}`;
+    return `Olá, ${settlement.establishmentName}!\n\nSegue o fechamento das entregas realizadas pela Rappidex Express.\n\nCidade: ${this.formatCity(settlement.city)}\nPeríodo: ${this.formatDate(settlement.periodStart)} até ${this.formatDate(settlement.periodEnd)}\nQuantidade de entregas: ${settlement.deliveries.length}\n${rateDescription}\nTotal das entregas: ${this.formatCurrency(settlement.totalDeliveries)}${monthlyFeeLine}\nTotal a pagar: ${this.formatCurrency(settlement.total)}\n\nChave PIX para pagamento:\n${settlement.pixKey}\n\nO relatório em PDF foi gerado. Anexarei o arquivo nesta conversa.\n\nObrigado pela parceria!\nRappidex Express`;
   }
 
   private createPdfBuffer(settlement: SettlementData) {
@@ -459,8 +485,8 @@ export class FinancialSettlementService {
         ? [
             ['Entregas finalizadas', String(settlement.deliveries.length)],
             [
-              'Valor por entrega',
-              this.formatCurrency(settlement.deliveryFeeValue),
+              settlement.city.feeMode === 'neighborhood' ? 'Modelo de taxa' : 'Valor por entrega',
+              settlement.city.feeMode === 'neighborhood' ? 'Por bairro + servico' : this.formatCurrency(settlement.deliveryFeeValue),
             ],
             ['Total entregas', this.formatCurrency(settlement.totalDeliveries)],
             ['Mensalidade', this.formatCurrency(settlement.monthlyFeeValue)],
@@ -468,8 +494,8 @@ export class FinancialSettlementService {
         : [
             ['Entregas finalizadas', String(settlement.deliveries.length)],
             [
-              'Valor por entrega',
-              this.formatCurrency(settlement.deliveryFeeValue),
+              settlement.city.feeMode === 'neighborhood' ? 'Modelo de taxa' : 'Valor por entrega',
+              settlement.city.feeMode === 'neighborhood' ? 'Por bairro + servico' : this.formatCurrency(settlement.deliveryFeeValue),
             ],
             ['Total a pagar', this.formatCurrency(settlement.total)],
             ['Chave PIX', settlement.pixKey],
@@ -519,7 +545,7 @@ export class FinancialSettlementService {
       tableY = 716;
     }
 
-    const headers = ['Pedido', 'Cliente', 'Data/Hora', 'Motoboy', 'Status'];
+    const headers = ['Pedido', 'Cliente', 'Data/Hora', 'Motoboy', 'Cobranca'];
     const widths = [80, 145, 90, 115, 95];
     const startX = 35;
     const rowHeight = 24;
@@ -539,7 +565,7 @@ export class FinancialSettlementService {
         delivery.clientName || 'Não informado',
         this.formatDateTime(delivery.finishedAt || delivery.createdAt),
         delivery.motoboyName,
-        delivery.status,
+        this.formatCurrency(delivery.charge ?? settlement.deliveryFeeValue),
       ];
       currentX = startX;
       values.forEach((value, index) => {

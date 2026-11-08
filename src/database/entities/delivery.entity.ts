@@ -40,6 +40,23 @@ export class DeliveryEntity {
   @Column({ nullable: true })
   addressNeighborhood?: string;
 
+  // Snapshot financeiro: nunca recalcular com uma tabela de preços alterada depois do pedido.
+  @Column({ nullable: true })
+  neighborhoodId?: string;
+
+  @Column({ nullable: true })
+  neighborhoodDeliveryFee?: number;
+
+  @Column({ nullable: true })
+  platformServiceFee?: number;
+
+  @Column({ nullable: true })
+  establishmentDeliveryCharge?: number;
+
+  @Column({ nullable: true })
+  feeResolutionStatus?: 'FIXED' | 'RESOLVED' | 'PENDING';
+
+
   @Column({ nullable: true })
   addressCity?: string;
 

@@ -8,6 +8,7 @@ import {
   UserEntity,
 } from '../database/entities';
 import { OrdersGateway } from '../gateway/orders.gateway';
+import { RegionsService } from '../regions/regions.service';
 import { IfoodOrdersService } from '../ifood/ifood-orders.service';
 import { IfoodOrderLinkService } from '../ifood/ifood-order-link.service';
 import { IfoodCreditsService } from '../ifood/ifood-credits.service';
@@ -30,6 +31,7 @@ describe('DeliveryService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DeliveryService,
+        { provide: RegionsService, useValue: {calculate: jest.fn().mockReturnValue({feeResolutionStatus:'FIXED',establishmentDeliveryCharge:10,platformServiceFee:0})} },
         {
           provide: getRepositoryToken(UserEntity),
           useValue: {
