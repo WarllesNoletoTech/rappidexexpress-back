@@ -12,7 +12,7 @@ import { UserRequest } from '../shared/interfaces';
 import { UserType } from '../shared/constants/enums.constants';
 
 export type Neighborhood = {
-  id: string; name: string; active: boolean; deliveryFee?: number; motoboyFee?: number; aliases?: string[];
+  id: string; name: string; active: boolean; aliases?: string[]; deliveryFee?: number; motoboyFee?: number;
 };
 export type PricingSnapshot = {
   neighborhoodId?: string;
@@ -41,7 +41,7 @@ export function amount(value: unknown) {
   return Math.round(numeric * 100) / 100;
 }
 
-type Row = { name: string; active?: boolean; deliveryFee?: number | string | null; motoboyFee?: number | string | null };
+type Row = { name: string; active?: boolean; deliveryFee?: number | string | null; motoboyFee?: number | string | null }; // Campos antigos ignorados no cadastro municipal.
 @Injectable()
 export class RegionsService {
   constructor(
@@ -70,10 +70,10 @@ export class RegionsService {
   async list(cityId: string, user: UserRequest) {
     this.ensureCity(user, cityId);
     const city = await this.city(cityId);
-    return { cityId, feeMode: city.feeMode || 'fixed', neighborhoods: city.neighborhoods || [] };
+    return { cityId, feeMode: city.feeMode || 'fixed', neighborhoods: (city.neighborhoods || []).map(n => ({id:n.id,name:n.name,active:n.active})) };
   }
 
-  // CSV é interpretado na interface e enviado como linhas revisadas. Nenhuma API externa.
+  // CSV inclui somente os nomes dos bairros. As tarifas ficam vinculadas às lojas.
   async addMany(cityId: string, user: UserRequest, input: unknown) {
     this.ensureAdmin(user, cityId);
     if (!Array.isArray(input) || !input.length || input.length > 500) {
@@ -90,12 +90,7 @@ export class RegionsService {
       const name = row.name.trim().replace(/\s+/g,' ');
       if (!name || name.length > 110 || !normalizedNeighborhood(name)) throw new BadRequestException('Nome de bairro inválido.');
       if (row.active !== undefined && typeof row.active !== 'boolean') throw new BadRequestException('Situação de bairro inválida.');
-      const deliveryFee = row.deliveryFee == null || row.deliveryFee === '' ? undefined : amount(row.deliveryFee);
-      const motoboyFee = row.motoboyFee == null || row.motoboyFee === '' ? undefined : amount(row.motoboyFee);
-      if (motoboyFee !== undefined && deliveryFee !== undefined && motoboyFee > deliveryFee) {
-        throw new BadRequestException(`Repasse do motoboy maior que a taxa integral em ${name}.`);
-      }
-      return {name, active:row.active !== false, deliveryFee, motoboyFee};
+      return {name, active:row.active !== false};
     });
     for (const row of parsed) {
       const key = normalizedNeighborhood(row.name);
@@ -104,7 +99,7 @@ export class RegionsService {
       current.push({id:uuid(), ...row});added++;
     }
     await this.cities.updateOne({ _id: city.id }, { $set: { neighborhoods: current } });
-    return {added, duplicates, neighborhoods:current};
+    return {added, duplicates, neighborhoods:current.map(n=>({id:n.id,name:n.name,active:n.active}))};
   }
 
   async updateNeighborhood(cityId: string, id: string, user: UserRequest,
@@ -130,13 +125,10 @@ export class RegionsService {
       if (typeof payload.active !== 'boolean') throw new BadRequestException('Situação inválida.');
       target.active=payload.active;
     }
-    if (payload.deliveryFee !== undefined) target.deliveryFee=payload.deliveryFee===null ? undefined : amount(payload.deliveryFee);
-    if (payload.motoboyFee !== undefined) target.motoboyFee=payload.motoboyFee===null ? undefined : amount(payload.motoboyFee);
-    if (target.deliveryFee !== undefined && target.motoboyFee !== undefined && target.motoboyFee > target.deliveryFee) {
-      throw new BadRequestException('O repasse do motoboy não pode superar a taxa integral da entrega.');
-    }
+    // Valores por bairro são exclusivos de cada estabelecimento.
+    // Não alterar valores legados da cidade durante a edição do nome.
     await this.cities.updateOne({_id:city.id},{$set:{neighborhoods}});
-    return {neighborhoods};
+    return {neighborhoods:neighborhoods.map(n=>({id:n.id,name:n.name,active:n.active}))};
   }
 
   async removeNeighborhood(cityId:string,id:string,user:UserRequest) {
@@ -147,16 +139,20 @@ export class RegionsService {
     const neighborhoods=list.filter(n=>n.id!==id);
     await this.cities.updateOne({_id:city.id},{$set:{neighborhoods}});
     // Históricos das entregas já possuem snapshot; nunca são recalculados.
-    return {removed:true,neighborhoods};
+    return {removed:true,neighborhoods:neighborhoods.map(n=>({id:n.id,name:n.name,active:n.active}))};
   }
 
-  // GET mantido para que telas de criação e perfil possam consultar valores.
-  // A origem é sempre o bairro da cidade, sem tabelas por estabelecimento.
+  // Cada cidade possui somente o catálogo de bairros; cada loja tem sua própria tabela.
   async getRates(cityId:string,storeId:string,user:UserRequest){
     const [store,city]=await Promise.all([this.store(cityId,storeId,user),this.city(cityId)]);
+    const byId=new Map((store.neighborhoodRates||[]).map(r=>[r.neighborhoodId,r]));
     return {storeId,storeName:store.name,feeMode:city.feeMode||'fixed',
-      rates:(city.neighborhoods||[]).map(n=>({neighborhoodId:n.id,id:n.id,name:n.name,
-        active:n.active,enabled:n.active,deliveryFee:n.deliveryFee??null,motoboyFee:n.motoboyFee??null}))};
+      rates:(city.neighborhoods||[]).map(n=>{
+        const own=byId.get(n.id);
+        return {neighborhoodId:n.id,id:n.id,name:n.name,active:n.active,
+          enabled:n.active && own?.enabled===true,
+          deliveryFee:own?.deliveryFee??null,motoboyFee:own?.motoboyFee??null};
+      })};
   }
   async store(cityId:string,storeId:string,user:UserRequest){
     this.ensureCity(user,cityId);
@@ -175,11 +171,36 @@ export class RegionsService {
     const shops=await this.users.find({where:{cityId,type:{$in:[UserType.SHOPKEEPER,UserType.SHOPKEEPERADMIN]}} as any});
     return shops.map(s=>({id:s.id,name:s.name,type:s.type}));
   }
-  // Rotas antigas preservadas apenas para responder 403, sem permitir alterações por loja.
-  async setRates(cityId:string,storeId:string,user:UserRequest,_rates:unknown){
+  // Escrita exclusiva do administrador. Nenhuma tarifa é herdada automaticamente da cidade.
+  async setRates(cityId:string,storeId:string,user:UserRequest,input:unknown){
     this.ensureAdmin(user,cityId);
-    await this.store(cityId,storeId,user);
-    throw new BadRequestException('Tarifas por bairro são definidas somente em Cidades → Gerenciar bairros.');
+    const [store,city]=await Promise.all([this.store(cityId,storeId,user),this.city(cityId)]);
+    if(!Array.isArray(input) || input.length>500)throw new BadRequestException('Envie até 500 tarifas por operação.');
+    const allowed=new Map((city.neighborhoods||[]).map(n=>[n.id,n]));
+    const seen=new Set<string>();
+    const rows: NonNullable<UserEntity['neighborhoodRates']> = [];
+    // Validar toda a entrada antes de gravar; bairros de outra cidade não são aceitos.
+    for(const entry of input){
+      if(!entry || typeof entry!=='object')throw new BadRequestException('Tarifa inválida.');
+      const data=entry as Record<string,unknown>;
+      const neighborhoodId=String(data.neighborhoodId||'');
+      const n=allowed.get(neighborhoodId);
+      if(!n || seen.has(neighborhoodId))throw new BadRequestException('Bairro duplicado ou não pertence à cidade.');
+      seen.add(neighborhoodId);
+      if(typeof data.enabled!=='boolean')throw new BadRequestException('Atendimento deve ser verdadeiro ou falso.');
+      const deliveryFee=data.deliveryFee==null || data.deliveryFee==='' ? undefined : amount(data.deliveryFee);
+      const motoboyFee=data.motoboyFee==null || data.motoboyFee==='' ? undefined : amount(data.motoboyFee);
+      if(data.enabled && (!n.active || deliveryFee===undefined || motoboyFee===undefined))
+        throw new BadRequestException(`Configure a taxa e o repasse de ${n.name} para ativar o atendimento.`);
+      if(motoboyFee!==undefined && deliveryFee!==undefined && motoboyFee>deliveryFee)
+        throw new BadRequestException(`Repasse maior que a taxa da entrega em ${n.name}.`);
+      rows.push({neighborhoodId,enabled:data.enabled,deliveryFee,motoboyFee});
+    }
+    // Aceita envio parcial, preservando as demais tarifas desta loja.
+    const merged=new Map((store.neighborhoodRates||[]).map(row=>[row.neighborhoodId,row]));
+    for(const row of rows)merged.set(row.neighborhoodId,row);
+    await this.users.updateOne({id:store.id},{$set:{neighborhoodRates:[...merged.values()],updatedAt:new Date()}});
+    return this.getRates(cityId,storeId,user);
   }
 
   async pendingFees(cityId:string,user:UserRequest){
@@ -202,14 +223,14 @@ export class RegionsService {
     const store=await this.users.findOne({where:{id:delivery.establishment.id}});
     if (!store) throw new NotFoundException('Estabelecimento não encontrado.');
     const snapshot=this.calculate({...city,feeMode:'neighborhood'},store,neighborhood.name);
-    if(snapshot.feeResolutionStatus==='PENDING') throw new BadRequestException('Configure taxa da entrega e repasse do motoboy neste bairro antes de regularizar.');
+    if(snapshot.feeResolutionStatus==='PENDING') throw new BadRequestException('Configure taxa da entrega e repasse do motoboy para este estabelecimento antes de regularizar.');
     const result=await this.deliveries.updateOne({id:deliveryId,feeResolutionStatus:'PENDING'},
       {$set:{...snapshot,addressNeighborhood:neighborhood.name}});
     if (!result.modifiedCount) throw new BadRequestException('Tarifa alterada por outro administrador. Recarregue.');
     return {id:deliveryId,...snapshot};
   }
 
-  calculate(city:CityEntity,_store:UserEntity,neighborhoodName?:string):PricingSnapshot {
+  calculate(city:CityEntity,store:UserEntity,neighborhoodName?:string):PricingSnapshot {
     if (city.feeMode!=='neighborhood'){
       const original=String(city.deliveryValue??'').replace(/R\$/gi,'').replace(/\s/g,'').trim();
       const numeric=Number(original.includes(',')?original.replace(/\./g,'').replace(',','.'):original);
@@ -218,12 +239,14 @@ export class RegionsService {
     }
     const neighborhood=(city.neighborhoods||[]).find(n=>n.active &&
       [n.name,...(n.aliases||[])].some(name=>normalizedNeighborhood(name)===normalizedNeighborhood(neighborhoodName||'')));
-    if(!neighborhood || neighborhood.deliveryFee===undefined || neighborhood.deliveryFee===null ||
-       neighborhood.motoboyFee===undefined || neighborhood.motoboyFee===null){
+    if(!neighborhood)return {feeResolutionStatus:'PENDING'};
+    const rate=(store.neighborhoodRates||[]).find(r=>r.neighborhoodId===neighborhood.id && r.enabled===true);
+    if(!rate || rate.deliveryFee===undefined || rate.deliveryFee===null ||
+       rate.motoboyFee===undefined || rate.motoboyFee===null){
       return {feeResolutionStatus:'PENDING'};
     }
-    const neighborhoodDeliveryFee=amount(neighborhood.deliveryFee);
-    const motoboyDeliveryFee=amount(neighborhood.motoboyFee);
+    const neighborhoodDeliveryFee=amount(rate.deliveryFee);
+    const motoboyDeliveryFee=amount(rate.motoboyFee);
     if(motoboyDeliveryFee>neighborhoodDeliveryFee) return {feeResolutionStatus:'PENDING'};
     return {feeResolutionStatus:'RESOLVED',neighborhoodId:neighborhood.id,
       neighborhoodDeliveryFee,motoboyDeliveryFee,platformServiceFee:0,

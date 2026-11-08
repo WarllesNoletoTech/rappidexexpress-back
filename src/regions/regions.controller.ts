@@ -39,6 +39,6 @@ export class RegionsController {
     return this.service.getRates(id,storeId,user);
   }
   @Put(':cityId/stores/:storeId/rates')
-  deprecated(@Param('cityId') id:string,@Param('storeId') storeId:string,@User() user:UserRequest,
+  saveRates(@Param('cityId') id:string,@Param('storeId') storeId:string,@User() user:UserRequest,
     @Body() body:{rates:unknown}){return this.service.setRates(id,storeId,user,body?.rates);}
 }

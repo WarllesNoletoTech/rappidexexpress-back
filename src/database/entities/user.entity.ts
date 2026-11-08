@@ -52,7 +52,7 @@ export class UserEntity {
   cityId: string;
 
   @Column({ nullable: true })
-  neighborhoodRates?: Array<{ neighborhoodId: string; enabled: boolean; deliveryFee: number }>;
+  neighborhoodRates?: Array<{ neighborhoodId: string; enabled: boolean; deliveryFee?: number; motoboyFee?: number }>;
 
 
   @Column()
