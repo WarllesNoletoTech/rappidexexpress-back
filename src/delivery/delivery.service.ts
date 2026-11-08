@@ -995,6 +995,10 @@ export class DeliveryService implements OnModuleInit {
         totalEntregas: 0,
         valorAdminPorEntrega: 0,
         totalValorAdmin: 0,
+        totalReceitaPlataforma: 0,
+        totalRepasseMotoboys: 0,
+        pendingFeeCount: 0,
+        pendingPayoutCount: 0,
         cityId: null,
         cityName: null,
         createdIn: dateRange.createdIn,
@@ -1054,6 +1058,9 @@ export class DeliveryService implements OnModuleInit {
 
       const bairroMode = city?.feeMode === 'neighborhood';
       const valorAdminPorEntrega = bairroMode ? 0 : this.getAdminDeliveryFeeValue(city);
+      // Repasse legado para entregas de taxa fixa sem snapshot de pagamento.
+      // Entregas por bairro sempre usam o valor registrado no próprio pedido.
+      const legacyMotoboyFee = this.getFixedMotoboyFeeValue(city);
       // Soma real por entrega, sem multiplicar tarifa fixa em cidades com bairros.
       const isLegacy = city?.feeModeActivatedAt ? {
         $and:[
@@ -1072,18 +1079,43 @@ export class DeliveryService implements OnModuleInit {
       const pendingExpression = {$cond:[
         pendingSnapshot,1,{$cond:[{$or:[pricedSnapshot,legacyFixed]},0,1]},
       ]};
-      const neighborhoodTotals = city
+      // Um pedido FIXED sem repasse salvo pode usar o repasse fixo da cidade.
+      // Em pedidos RESOLVED (bairro), nunca usar valores atuais como substitutos.
+      const hasSnapshotPayout = {$ne:[{$ifNull:['$motoboyDeliveryFee',null]},null]};
+      const eligibleForLegacyPayout = {$or:[
+        {$eq:['$feeResolutionStatus','FIXED']},
+        {$and:[{$eq:[{$ifNull:['$feeResolutionStatus',null]},null]},legacyFixed]},
+      ]};
+      const payoutKnownExpression = {$cond:[
+        pendingSnapshot,false,
+        {$cond:[hasSnapshotPayout,true,{$and:[
+          eligibleForLegacyPayout,{$literal:legacyMotoboyFee !== null},
+        ]}]},
+      ]};
+      const payoutExpression = {$cond:[
+        pendingSnapshot,0,
+        {$cond:[hasSnapshotPayout,{$ifNull:['$motoboyDeliveryFee',0]},
+          {$cond:[eligibleForLegacyPayout,legacyMotoboyFee ?? 0,0]},
+        ]},
+      ]};
+      const missingPayoutExpression = {$cond:[
+        {$and:[{$eq:[pendingExpression,0]},{$eq:[payoutKnownExpression,false]}]},1,0,
+      ]};
+      const financialTotals = city
         ? await this.deliveryRepository.aggregate([
           {$match:adminFinancialWhere},
           {$group:{
             _id:null,
             total:{$sum:chargeExpression},
             pending:{$sum:pendingExpression},
-            platformRevenue:{$sum:{$cond:[pricedSnapshot,{$subtract:[{$ifNull:['$establishmentDeliveryCharge',0]},{$ifNull:['$motoboyDeliveryFee',0]}]},0]}},
-            motoboyPayout:{$sum:{$cond:[pricedSnapshot,{$ifNull:['$motoboyDeliveryFee',0]},0]}},
+            motoboyPayout:{$sum:payoutExpression},
+            pendingPayout:{$sum:missingPayoutExpression},
           }},
         ]).toArray()
         : [];
+      const totalAReceber = Number(financialTotals[0]?.total || 0);
+      const totalRepasseMotoboys = Number(financialTotals[0]?.motoboyPayout || 0);
+      const currencyRound = (value: number) => Math.round(value * 100) / 100;
 
       return {
         pending,
@@ -1091,11 +1123,13 @@ export class DeliveryService implements OnModuleInit {
         waitingRelease,
         totalEntregas,
         valorAdminPorEntrega,
-        totalValorAdmin: city ? Number(neighborhoodTotals[0]?.total || 0) : totalEntregas * valorAdminPorEntrega,
-        totalReceitaPlataforma: bairroMode ? Number(neighborhoodTotals[0]?.platformRevenue || 0) : 0,
-        totalRepasseMotoboys: bairroMode ? Number(neighborhoodTotals[0]?.motoboyPayout || 0) : 0,
+        totalValorAdmin: currencyRound(totalAReceber),
+        // Saldo operacional previsto, não valor já liquidado ou lucro contábil.
+        totalReceitaPlataforma: currencyRound(totalAReceber - totalRepasseMotoboys),
+        totalRepasseMotoboys: currencyRound(totalRepasseMotoboys),
         feeMode: bairroMode ? 'neighborhood' : 'fixed',
-        pendingFeeCount: Number(neighborhoodTotals[0]?.pending || 0),
+        pendingFeeCount: Number(financialTotals[0]?.pending || 0),
+        pendingPayoutCount: Number(financialTotals[0]?.pendingPayout || 0),
         cityId: city?.id?.toHexString?.() ?? countQueryParams.cityId ?? null,
         cityName: city?.name ?? null,
         createdIn: dateRange.createdIn,
@@ -1250,6 +1284,15 @@ export class DeliveryService implements OnModuleInit {
   private getAdminDeliveryFeeValue(city: CityEntity | null) {
     const value = Number(city?.deliveryFeeValue);
     return Number.isFinite(value) ? value : 0;
+  }
+
+  private getFixedMotoboyFeeValue(city: CityEntity | null): number | null {
+    // Compatibilidade com o cadastro legado: ex. "7", "7,00" ou "R$ 7,00".
+    const raw = String(city?.deliveryValue ?? '').replace(/R\$/gi, '').replace(/\s/g, '').trim();
+    if (!raw) return null;
+    const normalized = raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : null;
   }
 
   private parseBooleanQuery(value?: boolean | string) {
