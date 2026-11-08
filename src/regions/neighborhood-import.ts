@@ -4,8 +4,11 @@ export type MunicipalityResult = {
   osm_id?: number | string;
   display_name?: string;
   name?: string;
+  type?: string;
+  class?: string;
+  addresstype?: string;
   boundingbox?: (string | number)[];
-  address?: { state_code?: string; state?: string; city?: string; town?: string; municipality?: string; village?: string };
+  address?: { country_code?: string; state_code?: string; state?: string; city?: string; town?: string; municipality?: string; village?: string };
 };
 
 const normalize = (value: unknown) => String(value || '').normalize('NFD')
@@ -72,4 +75,20 @@ export function extractNeighborhoodNames(elements: unknown, city: string): strin
     if (names.length === 500) break;
   }
   return names.sort((a,b) => a.localeCompare(b,'pt-BR'));
+}
+
+/** Retorna apenas municípios brasileiros reconhecidos, evitando bairros/ruas/estados. */
+export function isBrazilianMunicipality(result: MunicipalityResult | null | undefined): boolean {
+  if (!result || result.address?.country_code?.toLowerCase() !== 'br') return false;
+  const type = String(result.addresstype || '').toLowerCase();
+  const municipality = result.address?.city || result.address?.town || result.address?.municipality || result.address?.village;
+  const matchesType = ['city','town','municipality','village'].includes(type);
+  const adminBoundary = result.class === 'boundary' && result.type === 'administrative' && !!municipality;
+  return matchesType || adminBoundary;
+}
+
+export function osmMunicipalityKey(result: MunicipalityResult): string | null {
+  const prefix = result.osm_type === 'relation' ? 'R' : result.osm_type === 'way' ? 'W' : result.osm_type === 'node' ? 'N' : null;
+  const osmId = Number(result.osm_id);
+  return prefix && Number.isSafeInteger(osmId) && osmId > 0 ? `${prefix}${osmId}` : null;
 }

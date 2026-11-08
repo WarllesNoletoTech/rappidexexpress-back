@@ -26,6 +26,12 @@ export class CityEntity {
   feeModeActivatedAt?: Date;
 
   @Column({ nullable: true })
+  neighborhoodOsmSourceId?: string;
+
+  @Column({ nullable: true })
+  neighborhoodOsmSourceLabel?: string;
+
+  @Column({ nullable: true })
   neighborhoods?: Array<{ id: string; name: string; active: boolean; motoboyFee?: number; aliases?: string[] }>;
 
   @Column({ nullable: true })

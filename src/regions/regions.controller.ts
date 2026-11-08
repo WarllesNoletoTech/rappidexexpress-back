@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../authenticator/guards/jwt-auth.guard';
 import { User } from '../shared/decorators';
 import { UserRequest } from '../shared/interfaces';
@@ -12,12 +12,17 @@ export class RegionsController {
   @Get(':cityId/neighborhoods')
   list(@Param('cityId') id: string, @User() user: UserRequest) { return this.service.list(id, user); }
 
+  @Get(':cityId/neighborhoods/municipalities')
+  municipalities(@Param('cityId') id: string, @Query('q') searchTerm: string, @User() user: UserRequest) {
+    return this.service.municipalityOptions(id, user, searchTerm);
+  }
+
   @Get(':cityId/neighborhoods/suggestions')
   suggestions(@Param('cityId') id:string,@User() user:UserRequest) {return this.service.suggestions(id,user);}
 
   @Post(':cityId/neighborhoods/auto-import')
-  autoImport(@Param('cityId') id: string, @User() user: UserRequest) {
-    return this.service.autoImport(id, user);
+  autoImport(@Param('cityId') id: string, @User() user: UserRequest, @Body() body: {sourceOsmId?: string}) {
+    return this.service.autoImport(id, user, body?.sourceOsmId);
   }
 
   @Post(':cityId/neighborhoods')

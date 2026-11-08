@@ -1075,7 +1075,13 @@ export class DeliveryService implements OnModuleInit {
       const neighborhoodTotals = city
         ? await this.deliveryRepository.aggregate([
           {$match:adminFinancialWhere},
-          {$group:{_id:null,total:{$sum:chargeExpression},pending:{$sum:pendingExpression}}},
+          {$group:{
+            _id:null,
+            total:{$sum:chargeExpression},
+            pending:{$sum:pendingExpression},
+            platformRevenue:{$sum:{$cond:[pricedSnapshot,{$ifNull:['$platformServiceFee',0]},0]}},
+            motoboyPayout:{$sum:{$cond:[pricedSnapshot,{$ifNull:['$motoboyDeliveryFee',0]},0]}},
+          }},
         ]).toArray()
         : [];
 
@@ -1086,6 +1092,8 @@ export class DeliveryService implements OnModuleInit {
         totalEntregas,
         valorAdminPorEntrega,
         totalValorAdmin: city ? Number(neighborhoodTotals[0]?.total || 0) : totalEntregas * valorAdminPorEntrega,
+        totalReceitaPlataforma: bairroMode ? Number(neighborhoodTotals[0]?.platformRevenue || 0) : 0,
+        totalRepasseMotoboys: bairroMode ? Number(neighborhoodTotals[0]?.motoboyPayout || 0) : 0,
         feeMode: bairroMode ? 'neighborhood' : 'fixed',
         pendingFeeCount: Number(neighborhoodTotals[0]?.pending || 0),
         cityId: city?.id?.toHexString?.() ?? countQueryParams.cityId ?? null,

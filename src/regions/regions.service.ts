@@ -6,7 +6,7 @@ import { MongoRepository } from 'typeorm';
 import { ObjectId } from 'mongodb';
 import { v4 as uuid } from 'uuid';
 import axios from 'axios';
-import { buildOsmQuery, chooseMunicipality, extractNeighborhoodNames, stateNameFromCode } from './neighborhood-import';
+import { buildOsmQuery, chooseMunicipality, extractNeighborhoodNames, isBrazilianMunicipality, osmMunicipalityKey, stateNameFromCode } from './neighborhood-import';
 import { CityEntity } from '../database/entities/city.entity';
 import { UserEntity } from '../database/entities/user.entity';
 import { DeliveryEntity } from '../database/entities/delivery.entity';
@@ -39,7 +39,7 @@ export function amount(value: unknown) {
 
 @Injectable()
 export class RegionsService {
-  private readonly importCache = new Map<string, {expires: number; names: string[]; warning: string}>();
+  private readonly importCache = new Map<string, {expires: number; names: string[]; warning: string; sourceLabel?: string}>();
   private readonly autoImportInProgress = new Map<string, Promise<any>>();
   constructor(
     @InjectRepository(CityEntity) private readonly cities: MongoRepository<CityEntity>,
@@ -68,33 +68,90 @@ export class RegionsService {
     this.ensureCity(user, cityId);
     if (user.type === UserType.MOTOBOY) throw new UnauthorizedException('Apenas lojistas e administradores acessam tarifas.');
     const city = await this.city(cityId);
-    return { cityId, feeMode: city.feeMode || 'fixed', platformServiceFee: city.platformServiceFee ?? 0, neighborhoods: city.neighborhoods || [] };
+    return { cityId, feeMode: city.feeMode || 'fixed', platformServiceFee: city.platformServiceFee ?? 0, neighborhoods: city.neighborhoods || [], sourceOsmId: city.neighborhoodOsmSourceId, sourceLabel: city.neighborhoodOsmSourceLabel };
+  }
+
+  // Escolha explícita da cidade de origem no mapa. O servidor valida as
+  // opções e nunca utiliza coordenadas enviadas pelo navegador.
+  async municipalityOptions(cityId: string, user: UserRequest, searchTerm?: string) {
+    this.ensureAdmin(user, cityId);
+    const city = await this.city(cityId);
+    const query = String(searchTerm || `${city.name}, ${stateNameFromCode(city.state || '')}, Brasil`).trim();
+    if (query.length < 2 || query.length > 100) throw new BadRequestException('Informe de 2 a 100 caracteres para buscar a cidade.');
+    try {
+      const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+        params: {q: query, format: 'jsonv2', limit: 15, addressdetails: 1, countrycodes: 'br'},
+        headers: {'User-Agent': 'RappidexExpress-Server/1.0 (city selection)', 'Accept-Language': 'pt-BR'},
+        timeout: 8000,
+      });
+      const options = (Array.isArray(response.data) ? response.data : [])
+        .filter((result: any) => isBrazilianMunicipality(result))
+        .map((result: any) => ({
+          id: osmMunicipalityKey(result),
+          name: result.address?.city || result.address?.town || result.address?.municipality ||
+            result.address?.village || result.name || String(result.display_name || '').split(',')[0],
+          state: result.address?.state || '',
+          label: String(result.display_name || result.name || ''),
+        }))
+        .filter((item: any) => item.id && item.name && item.label);
+      const unique = [...new Map(options.map((item: any) => [item.id, item])).values()];
+      return {options: unique, warning: 'Selecione a cidade e confira o estado antes de importar; a lista de bairros do OpenStreetMap pode ser incompleta.'};
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      return {options: [], warning: 'O serviço de busca de cidades não respondeu. Tente novamente ou cadastre os bairros manualmente.'};
+    }
+  }
+
+  private async selectedMunicipality(sourceOsmId: string) {
+    if (!/^[RNW][1-9]\d{0,13}$/.test(sourceOsmId)) throw new BadRequestException('Cidade de origem inválida.');
+    try {
+      const response = await axios.get('https://nominatim.openstreetmap.org/lookup', {
+        params: {osm_ids: sourceOsmId, format: 'jsonv2', addressdetails: 1},
+        headers: {'User-Agent': 'RappidexExpress-Server/1.0 (city selection)', 'Accept-Language': 'pt-BR'},
+        timeout: 8000,
+      });
+      const result = Array.isArray(response.data) ? response.data[0] : null;
+      if (!isBrazilianMunicipality(result) || osmMunicipalityKey(result) !== sourceOsmId) {
+        throw new BadRequestException('A cidade selecionada não é um município brasileiro válido.');
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException('Não foi possível confirmar a cidade de origem no mapa. Repita a pesquisa.');
+    }
   }
 
   // Consulta exclusivamente no backend para preservar as regras de uso da fonte OSM.
   // Resultados são parciais: bairros ausentes continuam disponíveis para cadastro manual.
-  async suggestions(cityId: string, user: UserRequest) {
+  async suggestions(cityId: string, user: UserRequest, sourceOsmId?: string) {
     this.ensureAdmin(user, cityId);
     const city = await this.city(cityId);
-    const cached = this.importCache.get(cityId);
+    const cacheKey = `${cityId}|${sourceOsmId || 'automatic'}`;
+    const cached = this.importCache.get(cacheKey);
     if (cached && cached.expires > Date.now()) {
-      return { source: 'OpenStreetMap', names: cached.names, complete: false, warning: cached.warning };
+      return { source: 'OpenStreetMap', names: cached.names, complete: false, warning: cached.warning, sourceLabel: cached.sourceLabel };
     }
     const source = 'OpenStreetMap';
     const warning = 'Os dados do OpenStreetMap podem estar incompletos. Confira os bairros, edite os nomes e inclua os que faltarem.';
     try {
-      const geocoding = await axios.get('https://nominatim.openstreetmap.org/search', {
-        params: { q: `${city.name}, ${stateNameFromCode(city.state || '')}, Brasil`, format: 'jsonv2', limit: 8,
-          addressdetails: 1, countrycodes: 'br' },
-        headers: { 'User-Agent': 'RappidexExpress-Server/1.0 (neighborhood admin importer)', 'Accept-Language': 'pt-BR' },
-        timeout: 6500,
-      });
-      const region = chooseMunicipality(geocoding.data, city.name, city.state || '');
+      let region;
+      if (sourceOsmId) {
+        region = await this.selectedMunicipality(sourceOsmId);
+      } else {
+        const geocoding = await axios.get('https://nominatim.openstreetmap.org/search', {
+          params: { q: `${city.name}, ${stateNameFromCode(city.state || '')}, Brasil`, format: 'jsonv2', limit: 8,
+            addressdetails: 1, countrycodes: 'br' },
+          headers: { 'User-Agent': 'RappidexExpress-Server/1.0 (neighborhood admin importer)', 'Accept-Language': 'pt-BR' },
+          timeout: 6500,
+        });
+        region = chooseMunicipality(geocoding.data, city.name, city.state || '');
+      }
       if (!region) {
         const warn = 'Não foi possível localizar com segurança o limite municipal. Cadastre os bairros manualmente ou tente novamente mais tarde.';
-        this.importCache.set(cityId, { expires: Date.now() + 10 * 60_000, names: [], warning: warn });
+        this.importCache.set(cacheKey, { expires: Date.now() + 10 * 60_000, names: [], warning: warn });
         return {source, names: [], complete: false, warning: warn};
       }
+      const sourceLabel = String(region.display_name || region.name || '').slice(0,250);
       const endpoints = [
         'https://overpass-api.de/api/interpreter',
         'https://overpass.kumi.systems/api/interpreter',
@@ -126,23 +183,31 @@ export class RegionsService {
       const resultWarning = names.length ? warning : hadSuccess
         ? 'A consulta foi concluída, mas não encontrou bairros mapeados nessa cidade. Você pode cadastrá-los manualmente.'
         : 'Os serviços de mapas não responderam. É possível cadastrar manualmente e tentar sincronizar novamente.';
-      this.importCache.set(cityId, { expires: Date.now() + (names.length ? 6 * 3600_000 : 10 * 60_000), names, warning: resultWarning });
-      return {source, names, complete: false, warning: resultWarning};
-    } catch (_error) {
+      this.importCache.set(cacheKey, { expires: Date.now() + (names.length ? 6 * 3600_000 : 10 * 60_000), names, warning: resultWarning, sourceLabel });
+      return {source, names, complete: false, warning: resultWarning, sourceLabel};
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
       const warn = 'A consulta online não está disponível. É possível cadastrar bairros manualmente ou sincronizar depois.';
-      this.importCache.set(cityId, {expires: Date.now() + 10 * 60_000, names: [], warning: warn});
+      this.importCache.set(cacheKey, {expires: Date.now() + 10 * 60_000, names: [], warning: warn});
       return {source, names: [], complete: false, warning: warn};
     }
   }
 
   // Importação aditiva: nunca substitui nomes editados, IDs, bairros desativados,
   // repasses ou tarifas próprias dos estabelecimentos.
-  async autoImport(cityId: string, user: UserRequest) {
+  async autoImport(cityId: string, user: UserRequest, sourceOsmId?: string) {
     this.ensureAdmin(user, cityId);
-    const inProgress = this.autoImportInProgress.get(cityId);
+    const importKey = `${cityId}|${sourceOsmId || 'automatic'}`;
+    const inProgress = this.autoImportInProgress.get(importKey);
     if (inProgress) return inProgress;
     const task = (async () => {
-      const suggested = await this.suggestions(cityId, user);
+      const suggested = await this.suggestions(cityId, user, sourceOsmId);
+      if (sourceOsmId && suggested.sourceLabel) {
+        const city = await this.city(cityId);
+        await this.cities.updateOne({_id: city.id}, {$set: {
+          neighborhoodOsmSourceId: sourceOsmId, neighborhoodOsmSourceLabel: suggested.sourceLabel,
+        }});
+      }
       if (!suggested.names.length) {
         const city = await this.city(cityId);
         return { source: suggested.source, complete: false, totalFound: 0,
@@ -152,9 +217,9 @@ export class RegionsService {
       return { ...imported, source: suggested.source, totalFound: suggested.names.length,
         complete: false, warning: suggested.warning };
     })();
-    this.autoImportInProgress.set(cityId, task);
+    this.autoImportInProgress.set(importKey, task);
     try { return await task; }
-    finally { if (this.autoImportInProgress.get(cityId) === task) this.autoImportInProgress.delete(cityId); }
+    finally { if (this.autoImportInProgress.get(importKey) === task) this.autoImportInProgress.delete(importKey); }
   }
 
   async addMany(cityId: string, user: UserRequest, names: unknown) {
@@ -178,6 +243,7 @@ export class RegionsService {
   }
   async updateNeighborhood(cityId: string, id: string, user: UserRequest, payload: {name?: string; active?: boolean; motoboyFee?: number | null}) {
     this.ensureAdmin(user, cityId);
+    if (payload.motoboyFee !== undefined) throw new BadRequestException('O repasse do motoboy agora é a tarifa da loja menos a taxa administrativa.');
     const city = await this.city(cityId);
     const neighborhoods = [...(city.neighborhoods || [])];
     const target = neighborhoods.find(n => n.id === id);
@@ -194,11 +260,6 @@ export class RegionsService {
         target.aliases = [...(target.aliases || []), target.name].slice(-30);
       }
       target.name = name;
-    }
-    if (payload.motoboyFee !== undefined) {
-      // Campo vazio significa repasse não configurado; não calcular zero silenciosamente.
-      if (payload.motoboyFee === null) delete target.motoboyFee;
-      else target.motoboyFee = amount(payload.motoboyFee);
     }
     if (payload.active !== undefined) {
       if (typeof payload.active !== 'boolean') throw new BadRequestException('Situação inválida.');
@@ -247,10 +308,14 @@ export class RegionsService {
       if (!neighborhood || checked.has(input.neighborhoodId)) throw new BadRequestException('Bairro inexistente ou repetido.');
       if (input.enabled && !neighborhood.active) throw new BadRequestException('Bairro desativado pela administração.');
       checked.add(input.neighborhoodId);
+      const price = amount(input.deliveryFee);
+      if (input.enabled && price < amount(city.platformServiceFee ?? 0)) {
+        throw new BadRequestException(`A taxa da loja em ${neighborhood.name} deve ser igual ou superior à taxa administrativa da cidade.`);
+      }
       existing.set(input.neighborhoodId, {
         neighborhoodId: input.neighborhoodId,
         enabled: input.enabled,
-        deliveryFee: amount(input.deliveryFee),
+        deliveryFee: price,
       });
     }
     const neighborhoodRates = [...existing.values()];
@@ -281,8 +346,7 @@ export class RegionsService {
     if(!neighborhood)throw new BadRequestException('Bairro inexistente ou inativo.');
     const store=await this.users.findOne({where:{id:delivery.establishment.id}});
     if(!store)throw new NotFoundException('Estabelecimento não encontrado.');
-    // Preservar adicional congelado no momento do pedido, mesmo se a cidade mudou de modalidade.
-    // Tarifa do motoboy só é contabilizada após preenchimento explícito do repasse.
+    // Preservar a taxa administrativa registrada no pedido, mesmo após mudanças na cidade.
     const snapshot=this.calculate({ ...city, feeMode:'neighborhood',
       platformServiceFee:delivery.platformServiceFee ?? city.platformServiceFee },store,neighborhood.name);
     if(snapshot.feeResolutionStatus==='PENDING')throw new BadRequestException('A loja não possui tarifa ativa para esse bairro.');
@@ -305,19 +369,21 @@ export class RegionsService {
     }
     const neighborhood = (city.neighborhoods || []).find(n => n.active && normalizedNeighborhood(n.name) === normalizedNeighborhood(neighborhoodName || ''));
     const config = (store.neighborhoodRates || []).find(r => r.neighborhoodId === neighborhood?.id && r.enabled);
-    // Repasse é definido pela administração da cidade, não pela loja.
-    // Sem repasse explícito não permitir um pedido novo financeiro incorreto.
-    if (!neighborhood || !config || neighborhood.motoboyFee === undefined || neighborhood.motoboyFee === null) return {feeResolutionStatus:'PENDING',
-      platformServiceFee:amount(city.platformServiceFee ?? 0)};
-    const neighborhoodDeliveryFee = amount(config.deliveryFee);
-    const motoboyDeliveryFee = amount(neighborhood.motoboyFee);
     const platformServiceFee = amount(city.platformServiceFee ?? 0);
+    if (!neighborhood || !config) return {feeResolutionStatus:'PENDING', platformServiceFee};
+    // A tarifa definida pela loja é o valor INTEGRAL devido ao Rappidex.
+    // O Rappidex retém o serviço e repassa todo o restante ao entregador.
+    const neighborhoodDeliveryFee = amount(config.deliveryFee);
+    if (neighborhoodDeliveryFee < platformServiceFee) {
+      return {feeResolutionStatus:'PENDING', platformServiceFee};
+    }
+    const motoboyDeliveryFee = Math.round((neighborhoodDeliveryFee - platformServiceFee) * 100) / 100;
     return {
       neighborhoodId: neighborhood.id,
       neighborhoodDeliveryFee,
       motoboyDeliveryFee,
       platformServiceFee,
-      establishmentDeliveryCharge: Math.round((neighborhoodDeliveryFee + platformServiceFee) * 100) / 100,
+      establishmentDeliveryCharge: neighborhoodDeliveryFee,
       feeResolutionStatus:'RESOLVED',
     };
   }

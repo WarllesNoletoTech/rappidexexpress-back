@@ -24,6 +24,8 @@ class ObjectId {
   static isValid(value){return typeof value==='string' && /^[a-f0-9]{24}$/i.test(value);}
 }
 let generated=0;
+let mockAxiosGet=async()=>{throw new Error('Rede indisponível');};
+let mockAxiosPost=async()=>{throw new Error('Rede indisponível');};
 const mocks={
   '@nestjs/common': {BadRequestException,UnauthorizedException,NotFoundException,
     Injectable:deco, Logger:class {log(){} error(){} warn(){}}, Module:deco},
@@ -31,7 +33,7 @@ const mocks={
   'typeorm': new Proxy({}, {get:()=>deco}),
   'mongodb': {ObjectId},
   'uuid': {v4:()=>`qa-id-${++generated}`},
-  'axios': {get: async()=>{throw new Error('Rede desabilitada nos testes');}},
+  'axios': {get: (...args)=>mockAxiosGet(...args),post: (...args)=>mockAxiosPost(...args)},
   'class-validator':new Proxy({}, {get:()=>deco}),
   'class-transformer':new Proxy({}, {get:()=>deco}),
 };
@@ -74,10 +76,10 @@ test('Normalização e centavos brasileiros (Bacuri / Vila Lobão)',()=>{
   assert.throws(()=>amount('8,999'),BadRequestException);
   assert.throws(()=>amount(-1),BadRequestException);
 });
-test('Tarifa por bairro = valor da loja + adicional Rappidex, mantendo snapshot',()=>{
+test('Tarifa da loja INCLUI a retenção administrativa; a diferença paga o motoboy',()=>{
   const result=regions.calculate(city,store,'bacuri');
-  assert.equal(result.neighborhoodDeliveryFee,8);assert.equal(result.motoboyDeliveryFee,6);assert.equal(result.platformServiceFee,3);
-  assert.equal(result.establishmentDeliveryCharge,11);assert.equal(result.feeResolutionStatus,'RESOLVED');
+  assert.equal(result.neighborhoodDeliveryFee,8);assert.equal(result.motoboyDeliveryFee,5);assert.equal(result.platformServiceFee,3);
+  assert.equal(result.establishmentDeliveryCharge,8);assert.equal(result.feeResolutionStatus,'RESOLVED');
   assert.equal(regions.calculate(city,store,'Vila Lobão').feeResolutionStatus,'PENDING');
   assert.equal(regions.calculate(city,store,'bairro desconhecido').feeResolutionStatus,'PENDING');
   assert.equal(regions.calculate({...city,feeMode:'fixed'},store,'').establishmentDeliveryCharge,10);
@@ -93,7 +95,7 @@ test('Não permite ativar bairro desligado pelo administrador',async()=>{
 });
 test('Regularização só grava PENDING e preserva snapshots já tarifados',async()=>{
   const result=await regions.resolveFee(CITY_ID,'delivery-1','b1',admin);
-  assert.equal(result.establishmentDeliveryCharge,11);
+  assert.equal(result.establishmentDeliveryCharge,8);
   assert.equal(deliveryRow.feeResolutionStatus,'RESOLVED');
   await assert.rejects(regions.resolveFee(CITY_ID,'delivery-1','b1',admin),BadRequestException);
 });
@@ -240,34 +242,39 @@ test('Regularização após mudança para taxa fixa mantém adicional original d
   try{
     const snapshot=await regions.resolveFee(CITY_ID,deliveryRow.id,'b1',admin);
     assert.equal(snapshot.platformServiceFee,3);
-    assert.equal(snapshot.establishmentDeliveryCharge,11);
+    assert.equal(snapshot.establishmentDeliveryCharge,8);
   }finally{city.feeMode=oldMode;city.platformServiceFee=oldFee;deliveryRow=originalDelivery;}
 });
 
-test('Repasse por bairro editável somente pela administração; ausência bloqueia nova tarifação',async()=>{
-  const previous=city.neighborhoods[0].motoboyFee;
-  const originalUpdate=repoCities.updateOne;
-  repoCities.updateOne=async(_filter,operation)=>{city.neighborhoods=operation.$set.neighborhoods;return {modifiedCount:1};};
-  try{
-    await assert.rejects(regions.updateNeighborhood(CITY_ID,'b1',{id:store.id,type:UserType.SHOPKEEPER,cityId:CITY_ID},{motoboyFee:9}),UnauthorizedException);
-    await regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:7.5});
-    assert.equal(regions.calculate(city,store,'Bacuri').motoboyDeliveryFee,7.5);
-    await regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:null});
-    assert.equal(regions.calculate(city,store,'Bacuri').feeResolutionStatus,'PENDING');
-    await assert.rejects(regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:-1}),BadRequestException);
-  }finally{city.neighborhoods[0].motoboyFee=previous;repoCities.updateOne=originalUpdate;}
+test('Bairro não permite configurar repasse manual antigo',async()=>{
+  await assert.rejects(regions.updateNeighborhood(CITY_ID,'b1',{id:store.id,type:UserType.SHOPKEEPER,cityId:CITY_ID},{motoboyFee:9}),UnauthorizedException);
+  await assert.rejects(regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:7.5}),BadRequestException);
+  assert.equal(regions.calculate(city,store,'Bacuri').motoboyDeliveryFee,5);
 });
-test('Valor do motoboy preservado quando a tabela de taxas muda',()=>{
-  const initial=regions.calculate(city,store,'Bacuri');
-  city.neighborhoods[0].motoboyFee=20;
-  const newer=regions.calculate(city,store,'Bacuri');
-  assert.equal(initial.motoboyDeliveryFee,6);
-  assert.equal(newer.motoboyDeliveryFee,20);
-  city.neighborhoods[0].motoboyFee=6;
+test('Retenção de R$ 3 de R$ 10 resulta em R$ 7 ao motoboy',()=>{
+  const newStore={...store,neighborhoodRates:[{neighborhoodId:'b1',enabled:true,deliveryFee:10}]};
+  const snapshot=regions.calculate(city,newStore,'Bacuri');
+  assert.equal(snapshot.establishmentDeliveryCharge,10);
+  assert.equal(snapshot.platformServiceFee,3);
+  assert.equal(snapshot.motoboyDeliveryFee,7);
+  assert.equal(snapshot.neighborhoodDeliveryFee,10);
+});
+test('Tarifa inferior ao custo administrativo é bloqueada na loja e fica PENDING no cálculo',async()=>{
+  await assert.rejects(regions.setRates(CITY_ID,store.id,admin,[{neighborhoodId:'b1',enabled:true,deliveryFee:2.99}]),BadRequestException);
+  assert.equal(regions.calculate(city,{...store,neighborhoodRates:[{neighborhoodId:'b1',enabled:true,deliveryFee:2.99}]},'Bacuri').feeResolutionStatus,'PENDING');
+  assert.equal(regions.calculate(city,{...store,neighborhoodRates:[{neighborhoodId:'b1',enabled:true,deliveryFee:3}]},'Bacuri').motoboyDeliveryFee,0);
+});
+test('Alterar a taxa administrativa só afeta novos snapshots; histórico não recalcula',()=>{
+  const previous=regions.calculate(city,store,'Bacuri');
+  const newer=regions.calculate({...city,platformServiceFee:4},store,'Bacuri');
+  assert.equal(previous.motoboyDeliveryFee,5);
+  assert.equal(newer.motoboyDeliveryFee,4);
+  assert.equal(previous.platformServiceFee,3);
+  assert.equal(previous.establishmentDeliveryCharge,newer.establishmentDeliveryCharge);
 });
 
 // Testes da importação automática (sem chamadas reais à API externa).
-const {chooseMunicipality,buildOsmQuery,extractNeighborhoodNames} = require(path.join(ROOT,'regions/neighborhood-import.ts'));
+const {chooseMunicipality,buildOsmQuery,extractNeighborhoodNames,isBrazilianMunicipality,osmMunicipalityKey} = require(path.join(ROOT,'regions/neighborhood-import.ts'));
 test('Geocodificação só aceita município correspondente à cidade e UF',()=>{
   const region=chooseMunicipality([
     {name:'Palmas',osm_type:'relation',osm_id:42,address:{city:'Palmas',state_code:'PR'},boundingbox:['-1','0','-1','0']},
@@ -331,5 +338,51 @@ test('Bairro editado não reaparece com o nome anterior em nova sincronização'
     city.neighborhoods=originals;
     repoCities.updateOne=oldUpdate;
     regions.suggestions=oldSuggestions;
+  }
+});
+
+// Fluxo de escolha da cidade no OpenStreetMap, com APIs externas simuladas.
+test('Busca de cidade retorna candidatos de municípios do Brasil e ignora ruas e países incorretos',async()=>{
+  const before=mockAxiosGet;
+  const candidate={osm_type:'relation',osm_id:1234,name:'Palmas',addresstype:'city',
+    display_name:'Palmas, Tocantins, Brasil',address:{city:'Palmas',state:'Tocantins',country_code:'br'},
+    boundingbox:['-10.5','-9.5','-48.5','-47.5']};
+  try{
+    mockAxiosGet=async(url)=>({data:[candidate,{...candidate,osm_id:5678,addresstype:'road',address:{road:'Rua',country_code:'br'}},
+      {...candidate,osm_id:2222,address:{city:'Palmas',country_code:'ar'}}]});
+    const result=await regions.municipalityOptions(CITY_ID,admin,'Palmas, TO');
+    assert.equal(result.options.length,1);
+    assert.equal(result.options[0].id,'R1234');
+    assert.ok(isBrazilianMunicipality(candidate));assert.equal(osmMunicipalityKey(candidate),'R1234');
+    await assert.rejects(regions.municipalityOptions(CITY_ID,adminOther,'Palmas'),UnauthorizedException);
+  }finally{mockAxiosGet=before;}
+});
+test('Sincronização da cidade explicitamente escolhida consulta origem validada e só adiciona novos bairros',async()=>{
+  const beforeGet=mockAxiosGet,beforePost=mockAxiosPost;
+  const oldUpdate=repoCities.updateOne;
+  const oldList=city.neighborhoods.map(n=>({...n}));
+  const candidate={osm_type:'relation',osm_id:1234,name:'Palmas',addresstype:'city',
+    display_name:'Palmas, Tocantins, Brasil',address:{city:'Palmas',state:'Tocantins',country_code:'br'},
+    boundingbox:['-10.5','-9.5','-48.5','-47.5']};
+  try{
+    mockAxiosGet=async(url,opts)=>{
+      if(!url.endsWith('/lookup'))throw new Error('endpoint não esperado');
+      assert.equal(opts.params.osm_ids,'R1234');return {data:[candidate]};
+    };
+    mockAxiosPost=async(url,body)=>{
+      assert.match(body,/area%3A3600001234/);
+      return {data:{elements:[{tags:{name:'Bacuri'}},{tags:{name:'Aureny III'}}]}};
+    };
+    repoCities.updateOne=async(_filter,op)=>{Object.assign(city,op.$set);return {modifiedCount:1}};
+    const result=await regions.autoImport(CITY_ID,admin,'R1234');
+    assert.equal(result.added,1);
+    assert.equal(city.neighborhoodOsmSourceId,'R1234');
+    assert.ok(city.neighborhoodOsmSourceLabel.includes('Palmas'));
+    assert.ok(result.neighborhoods.some(n=>n.name==='Aureny III'));
+    assert.equal((await regions.autoImport(CITY_ID,admin,'R1234')).added,0);
+    await assert.rejects(regions.autoImport(CITY_ID,admin,'not-valid'),BadRequestException);
+  }finally{
+    mockAxiosGet=beforeGet;mockAxiosPost=beforePost;
+    city.neighborhoods=oldList;delete city.neighborhoodOsmSourceId;delete city.neighborhoodOsmSourceLabel;repoCities.updateOne=oldUpdate;
   }
 });
