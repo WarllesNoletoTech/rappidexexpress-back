@@ -265,3 +265,71 @@ test('Valor do motoboy preservado quando a tabela de taxas muda',()=>{
   assert.equal(newer.motoboyDeliveryFee,20);
   city.neighborhoods[0].motoboyFee=6;
 });
+
+// Testes da importação automática (sem chamadas reais à API externa).
+const {chooseMunicipality,buildOsmQuery,extractNeighborhoodNames} = require(path.join(ROOT,'regions/neighborhood-import.ts'));
+test('Geocodificação só aceita município correspondente à cidade e UF',()=>{
+  const region=chooseMunicipality([
+    {name:'Palmas',osm_type:'relation',osm_id:42,address:{city:'Palmas',state_code:'PR'},boundingbox:['-1','0','-1','0']},
+    {name:'Palmas',osm_type:'relation',osm_id:123,address:{municipality:'Palmas',state:'Tocantins'},boundingbox:['-10.5','-9.5','-48.5','-47.5']},
+  ],'Palmas','TO');
+  assert.equal(region.osm_id,123);
+  assert.equal(chooseMunicipality([{name:'Palmas',address:{city:'Palmas',state_code:'PR'}}],'Palmas','TO'),null);
+  assert.match(buildOsmQuery(region,'area'),/area:3600000123/);
+  assert.match(buildOsmQuery(region,'bbox'),/\(-10\.5,-48\.5,-9\.5,-47\.5\)/);
+});
+test('Sugestões não repetem acentos nem confundem nome da cidade com bairro',()=>{
+  const names=extractNeighborhoodNames([
+    {tags:{name:'Vila Lobão'}}, {tags:{name:'vila lobao'}},
+    {tags:{name:'Bacuri'}}, {tags:{name:'Palmas'}}, {tags:{name:' '}},
+  ],'Palmas');
+  assert.deepEqual(names,['Bacuri','Vila Lobão']);
+});
+test('Importação automática só acrescenta bairros e mantém ID, repasse e status existentes',async()=>{
+  const originals=city.neighborhoods.map(n=>({...n}));
+  const oldSuggestions=regions.suggestions;
+  const oldUpdate=repoCities.updateOne;
+  try{
+    regions.suggestions=async()=>({names:['Bacuri','Jardim das Flores','VILA LOBAO'],source:'OpenStreetMap',warning:'Fonte parcial.'});
+    repoCities.updateOne=async(_filter,op)=>{city.neighborhoods=op.$set.neighborhoods;return {modifiedCount:1}};
+    const added=await regions.autoImport(CITY_ID,admin);
+    assert.equal(added.added,1);
+    assert.equal(added.neighborhoods.length,3);
+    assert.deepEqual(added.neighborhoods.slice(0,2),originals);
+    assert.equal((await regions.autoImport(CITY_ID,admin)).added,0);
+    await assert.rejects(regions.autoImport(CITY_ID,adminOther),UnauthorizedException);
+  }finally{
+    city.neighborhoods=originals;
+    regions.suggestions=oldSuggestions;
+    repoCities.updateOne=oldUpdate;
+  }
+});
+test('Serviço de mapas vazio não elimina bairros cadastrados',async()=>{
+  const originalSuggestions=regions.suggestions;
+  try{
+    regions.suggestions=async()=>({names:[],source:'OpenStreetMap',warning:'Sem resultado'});
+    const result=await regions.autoImport(CITY_ID,admin);
+    assert.equal(result.added,0);
+    assert.deepEqual(result.neighborhoods,city.neighborhoods);
+  }finally{regions.suggestions=originalSuggestions;}
+});
+test('Bairro editado não reaparece com o nome anterior em nova sincronização',async()=>{
+  const originals=city.neighborhoods.map(n=>({...n}));
+  const oldUpdate=repoCities.updateOne;
+  const oldSuggestions=regions.suggestions;
+  try{
+    repoCities.updateOne=async(_filter,op)=>{city.neighborhoods=op.$set.neighborhoods;return {modifiedCount:1}};
+    await regions.updateNeighborhood(CITY_ID,'b1',admin,{name:'Bacuri Norte'});
+    assert.equal(city.neighborhoods[0].name,'Bacuri Norte');
+    assert.ok(city.neighborhoods[0].aliases.includes('Bacuri'));
+    regions.suggestions=async()=>({names:['Bacuri','Bacuri Norte'],source:'OpenStreetMap',warning:'Parcial'});
+    const result=await regions.autoImport(CITY_ID,admin);
+    assert.equal(result.added,0);
+    assert.equal(result.neighborhoods.length,2);
+    assert.equal(result.neighborhoods[0].motoboyFee,6);
+  }finally{
+    city.neighborhoods=originals;
+    repoCities.updateOne=oldUpdate;
+    regions.suggestions=oldSuggestions;
+  }
+});

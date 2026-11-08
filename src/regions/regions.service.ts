@@ -6,13 +6,14 @@ import { MongoRepository } from 'typeorm';
 import { ObjectId } from 'mongodb';
 import { v4 as uuid } from 'uuid';
 import axios from 'axios';
+import { buildOsmQuery, chooseMunicipality, extractNeighborhoodNames, stateNameFromCode } from './neighborhood-import';
 import { CityEntity } from '../database/entities/city.entity';
 import { UserEntity } from '../database/entities/user.entity';
 import { DeliveryEntity } from '../database/entities/delivery.entity';
 import { UserRequest } from '../shared/interfaces';
 import { UserType } from '../shared/constants/enums.constants';
 
-export type Neighborhood = { id: string; name: string; active: boolean; motoboyFee?: number };
+export type Neighborhood = { id: string; name: string; active: boolean; motoboyFee?: number; aliases?: string[] };
 export type NeighborhoodRate = { neighborhoodId: string; enabled: boolean; deliveryFee: number };
 export type PricingSnapshot = {
   neighborhoodId?: string;
@@ -38,7 +39,8 @@ export function amount(value: unknown) {
 
 @Injectable()
 export class RegionsService {
-  private readonly importCache = new Map<string, {expires: number; names: string[]}>();
+  private readonly importCache = new Map<string, {expires: number; names: string[]; warning: string}>();
+  private readonly autoImportInProgress = new Map<string, Promise<any>>();
   constructor(
     @InjectRepository(CityEntity) private readonly cities: MongoRepository<CityEntity>,
     @InjectRepository(UserEntity) private readonly users: MongoRepository<UserEntity>,
@@ -69,37 +71,90 @@ export class RegionsService {
     return { cityId, feeMode: city.feeMode || 'fixed', platformServiceFee: city.platformServiceFee ?? 0, neighborhoods: city.neighborhoods || [] };
   }
 
-  // Prévia pública opcional (OSM): nunca salva diretamente e não garante cobertura completa.
+  // Consulta exclusivamente no backend para preservar as regras de uso da fonte OSM.
+  // Resultados são parciais: bairros ausentes continuam disponíveis para cadastro manual.
   async suggestions(cityId: string, user: UserRequest) {
     this.ensureAdmin(user, cityId);
     const city = await this.city(cityId);
     const cached = this.importCache.get(cityId);
-    if (cached && cached.expires > Date.now()) return {source:'OpenStreetMap', names:cached.names, complete:false};
+    if (cached && cached.expires > Date.now()) {
+      return { source: 'OpenStreetMap', names: cached.names, complete: false, warning: cached.warning };
+    }
+    const source = 'OpenStreetMap';
+    const warning = 'Os dados do OpenStreetMap podem estar incompletos. Confira os bairros, edite os nomes e inclua os que faltarem.';
     try {
       const geocoding = await axios.get('https://nominatim.openstreetmap.org/search', {
-        params: {q:`${city.name}, ${city.state || ''}, Brasil`,format:'jsonv2',limit:5,addressdetails:1},
-        headers:{'User-Agent':'Rappidex-Operations/1.0 (admin neighborhood preview)'},timeout:12000,
+        params: { q: `${city.name}, ${stateNameFromCode(city.state || '')}, Brasil`, format: 'jsonv2', limit: 8,
+          addressdetails: 1, countrycodes: 'br' },
+        headers: { 'User-Agent': 'RappidexExpress-Server/1.0 (neighborhood admin importer)', 'Accept-Language': 'pt-BR' },
+        timeout: 6500,
       });
-      const region = (geocoding.data as any[]).find((item:any)=>
-        item.osm_type==='relation' &&
-        (!item.address?.state_code || item.address.state_code===city.state));
-      if (!region) return {source:'OpenStreetMap', names:[], complete:false, warning:'Limite municipal não localizado no OSM. Use o cadastro manual.'};
-      const areaId = Number(region.osm_id)+3600000000;
-      if (!Number.isSafeInteger(areaId)) throw new Error('Identificador municipal inválido.');
-      const query = `[out:json][timeout:20];area(${areaId})->.searchArea;(node["place"~"^(neighbourhood|suburb|quarter)$"](area.searchArea);way["place"~"^(neighbourhood|suburb|quarter)$"](area.searchArea);relation["place"~"^(neighbourhood|suburb|quarter)$"](area.searchArea););out tags;`;
-      const response = await axios.post('https://overpass.kumi.systems/api/interpreter',
-        new URLSearchParams({data:query}).toString(),{
-        headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':'Rappidex-Operations/1.0'},timeout:28000,
-      });
-      const imported: string[] = (response.data?.elements||[])
-        .map((e:any)=>String(e.tags?.name||'').trim())
-        .filter((name:string)=>name.length>1&&name.length<=110);
-      const names = [...new Set<string>(imported)].sort((a,b)=>a.localeCompare(b,'pt-BR'));
-      this.importCache.set(cityId,{expires:Date.now()+6*3600*1000,names});
-      return {source:'OpenStreetMap',names,complete:false,warning:'Lista colaborativa. Confira com o cadastro municipal e acrescente bairros ausentes.'};
+      const region = chooseMunicipality(geocoding.data, city.name, city.state || '');
+      if (!region) {
+        const warn = 'Não foi possível localizar com segurança o limite municipal. Cadastre os bairros manualmente ou tente novamente mais tarde.';
+        this.importCache.set(cityId, { expires: Date.now() + 10 * 60_000, names: [], warning: warn });
+        return {source, names: [], complete: false, warning: warn};
+      }
+      const endpoints = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter',
+      ];
+      // Se a área municipal não existir no Overpass, tenta o retângulo do
+      // município geocodificado. Nenhum dos dois métodos garante 100% de cobertura.
+      let names: string[] = [];
+      let hadSuccess = false;
+      for (const mode of ['area', 'bbox'] as const) {
+        if (mode === 'area' && region.osm_type !== 'relation') continue;
+        const query = buildOsmQuery(region, mode);
+        if (!query) continue;
+        // Os espelhos respondem em paralelo para não exceder o timeout HTTP
+        // do Heroku (30s). O primeiro resultado com bairros é utilizado.
+        const attempts = endpoints.map(async endpoint => {
+          const response = await axios.post(endpoint, new URLSearchParams({data: query}).toString(), {
+            headers: {'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'RappidexExpress-Server/1.0'},
+            timeout: 10000, maxContentLength: 5_000_000,
+          });
+          hadSuccess = true;
+          const found = extractNeighborhoodNames(response.data?.elements, city.name);
+          if (!found.length) throw new Error('Sem bairros mapeados nesta fonte.');
+          return found;
+        });
+        try { names = await Promise.any(attempts); }
+        catch (_error) { /* Tenta o modo bbox, se a consulta de área não encontrou bairros. */ }
+        if (names.length) break;
+      }
+      const resultWarning = names.length ? warning : hadSuccess
+        ? 'A consulta foi concluída, mas não encontrou bairros mapeados nessa cidade. Você pode cadastrá-los manualmente.'
+        : 'Os serviços de mapas não responderam. É possível cadastrar manualmente e tentar sincronizar novamente.';
+      this.importCache.set(cityId, { expires: Date.now() + (names.length ? 6 * 3600_000 : 10 * 60_000), names, warning: resultWarning });
+      return {source, names, complete: false, warning: resultWarning};
     } catch (_error) {
-      return {source:'OpenStreetMap',names:[],complete:false,warning:'A consulta online não está disponível. É possível cadastrar ou colar uma lista manualmente.'};
+      const warn = 'A consulta online não está disponível. É possível cadastrar bairros manualmente ou sincronizar depois.';
+      this.importCache.set(cityId, {expires: Date.now() + 10 * 60_000, names: [], warning: warn});
+      return {source, names: [], complete: false, warning: warn};
     }
+  }
+
+  // Importação aditiva: nunca substitui nomes editados, IDs, bairros desativados,
+  // repasses ou tarifas próprias dos estabelecimentos.
+  async autoImport(cityId: string, user: UserRequest) {
+    this.ensureAdmin(user, cityId);
+    const inProgress = this.autoImportInProgress.get(cityId);
+    if (inProgress) return inProgress;
+    const task = (async () => {
+      const suggested = await this.suggestions(cityId, user);
+      if (!suggested.names.length) {
+        const city = await this.city(cityId);
+        return { source: suggested.source, complete: false, totalFound: 0,
+          added: 0, neighborhoods: city.neighborhoods || [], warning: suggested.warning };
+      }
+      const imported = await this.addMany(cityId, user, suggested.names.slice(0, 500));
+      return { ...imported, source: suggested.source, totalFound: suggested.names.length,
+        complete: false, warning: suggested.warning };
+    })();
+    this.autoImportInProgress.set(cityId, task);
+    try { return await task; }
+    finally { if (this.autoImportInProgress.get(cityId) === task) this.autoImportInProgress.delete(cityId); }
   }
 
   async addMany(cityId: string, user: UserRequest, names: unknown) {
@@ -109,7 +164,7 @@ export class RegionsService {
     }
     const city = await this.city(cityId);
     const current: Neighborhood[] = [...(city.neighborhoods || [])];
-    const known = new Set(current.map(n => normalizedNeighborhood(n.name)));
+    const known = new Set(current.flatMap(n => [n.name, ...(n.aliases || [])].map(normalizedNeighborhood)));
     let added = 0;
     for (const raw of names) {
       if (typeof raw !== 'string') throw new BadRequestException('Nome de bairro inválido.');
@@ -129,8 +184,14 @@ export class RegionsService {
     if (!target) throw new NotFoundException('Bairro não encontrado.');
     if (payload.name !== undefined) {
       const name = String(payload.name).trim();
-      if (!name || name.length > 110 || neighborhoods.some(n => n.id !== id && normalizedNeighborhood(n.name) === normalizedNeighborhood(name))) {
+      if (!name || name.length > 110 || neighborhoods.some(n => n.id !== id &&
+          [n.name, ...(n.aliases || [])].some(previous => normalizedNeighborhood(previous) === normalizedNeighborhood(name)))) {
         throw new BadRequestException('Nome inválido ou bairro duplicado.');
+      }
+      // Mantém nomes anteriores para que sincronizações futuras não recriem
+      // bairros renomeados pelo administrador.
+      if (normalizedNeighborhood(target.name) !== normalizedNeighborhood(name)) {
+        target.aliases = [...(target.aliases || []), target.name].slice(-30);
       }
       target.name = name;
     }

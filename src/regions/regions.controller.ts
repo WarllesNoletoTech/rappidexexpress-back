@@ -15,6 +15,11 @@ export class RegionsController {
   @Get(':cityId/neighborhoods/suggestions')
   suggestions(@Param('cityId') id:string,@User() user:UserRequest) {return this.service.suggestions(id,user);}
 
+  @Post(':cityId/neighborhoods/auto-import')
+  autoImport(@Param('cityId') id: string, @User() user: UserRequest) {
+    return this.service.autoImport(id, user);
+  }
+
   @Post(':cityId/neighborhoods')
   add(@Param('cityId') id: string, @User() user: UserRequest, @Body() body: {names: string[]}) {
     return this.service.addMany(id, user, body.names);
