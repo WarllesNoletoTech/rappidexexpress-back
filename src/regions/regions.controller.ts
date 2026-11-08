@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../authenticator/guards/jwt-auth.guard';
 import { User } from '../shared/decorators';
 import { UserRequest } from '../shared/interfaces';
@@ -10,51 +10,35 @@ export class RegionsController {
   constructor(private readonly service: RegionsService) {}
 
   @Get(':cityId/neighborhoods')
-  list(@Param('cityId') id: string, @User() user: UserRequest) { return this.service.list(id, user); }
-
-  @Get(':cityId/neighborhoods/municipalities')
-  municipalities(@Param('cityId') id: string, @Query('q') searchTerm: string, @Query('provider') provider: string, @User() user: UserRequest) {
-    return this.service.municipalityOptions(id, user, searchTerm, provider);
-  }
-
-  @Get(':cityId/neighborhoods/suggestions')
-  suggestions(@Param('cityId') id:string,@User() user:UserRequest) {return this.service.suggestions(id,user);}
-
-  @Post(':cityId/neighborhoods/auto-import')
-  autoImport(@Param('cityId') id: string, @User() user: UserRequest, @Body() body: {sourceOsmId?: string}) {
-    return this.service.autoImport(id, user, body?.sourceOsmId);
-  }
+  list(@Param('cityId') id:string,@User() user:UserRequest){return this.service.list(id,user);}
 
   @Post(':cityId/neighborhoods')
-  add(@Param('cityId') id: string, @User() user: UserRequest, @Body() body: {names: string[]}) {
-    return this.service.addMany(id, user, body.names);
+  add(@Param('cityId') id:string,@User() user:UserRequest,@Body() body:{names?:string[];items?:Array<{name:string;deliveryFee?:number;motoboyFee?:number;active?:boolean}>}){
+    return this.service.addMany(id,user,body?.items??body?.names);
   }
-
   @Put(':cityId/neighborhoods/:neighborhoodId')
-  update(@Param('cityId') cityId: string, @Param('neighborhoodId') neighborhoodId: string, @User() user: UserRequest, @Body() body: {name?: string; active?: boolean; motoboyFee?: number | null}) {
-    return this.service.updateNeighborhood(cityId, neighborhoodId, user, body);
+  update(@Param('cityId') cityId:string,@Param('neighborhoodId') neighborhoodId:string,@User() user:UserRequest,
+    @Body() body:{name?:string;active?:boolean;deliveryFee?:number|null;motoboyFee?:number|null}){
+    return this.service.updateNeighborhood(cityId,neighborhoodId,user,body);
   }
-
+  @Delete(':cityId/neighborhoods/:neighborhoodId')
+  remove(@Param('cityId') cityId:string,@Param('neighborhoodId') id:string,@User() user:UserRequest){
+    return this.service.removeNeighborhood(cityId,id,user);
+  }
   @Get(':cityId/pending-fees')
   pendingFees(@Param('cityId') id:string,@User() user:UserRequest){return this.service.pendingFees(id,user);}
-
   @Put(':cityId/deliveries/:deliveryId/resolve-fee')
-  resolveFee(@Param('cityId') id:string,@Param('deliveryId') deliveryId:string,@Body() body:{neighborhoodId:string},@User() user:UserRequest){
+  resolveFee(@Param('cityId') id:string,@Param('deliveryId') deliveryId:string,
+    @Body() body:{neighborhoodId:string},@User() user:UserRequest){
     return this.service.resolveFee(id,deliveryId,body.neighborhoodId,user);
   }
-
   @Get(':cityId/stores')
-  stores(@Param('cityId') cityId: string, @User() user: UserRequest) {
-    return this.service.stores(cityId, user);
-  }
-
+  stores(@Param('cityId') id:string,@User() user:UserRequest){return this.service.stores(id,user);}
   @Get(':cityId/stores/:storeId/rates')
-  rates(@Param('cityId') cityId: string, @Param('storeId') storeId: string, @User() user: UserRequest) {
-    return this.service.getRates(cityId, storeId, user);
+  rates(@Param('cityId') id:string,@Param('storeId') storeId:string,@User() user:UserRequest){
+    return this.service.getRates(id,storeId,user);
   }
-
   @Put(':cityId/stores/:storeId/rates')
-  saveRates(@Param('cityId') cityId: string, @Param('storeId') storeId: string, @User() user: UserRequest, @Body() body: {rates: Array<{neighborhoodId: string; enabled: boolean; deliveryFee: number}>}) {
-    return this.service.setRates(cityId, storeId, user, body.rates);
-  }
+  deprecated(@Param('cityId') id:string,@Param('storeId') storeId:string,@User() user:UserRequest,
+    @Body() body:{rates:unknown}){return this.service.setRates(id,storeId,user,body?.rates);}
 }

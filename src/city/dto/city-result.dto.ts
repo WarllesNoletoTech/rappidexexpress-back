@@ -24,10 +24,8 @@ export class CityResult {
   neighborhoodCount?: number;
 
   @Expose()
-  neighborhoodOsmSourceId?: string;
 
   @Expose()
-  neighborhoodOsmSourceLabel?: string;
 
   @Expose()
   deliveryValue?: string;
@@ -57,10 +55,8 @@ export class CityResult {
       state: city.state,
       clientWhatsappMessage: city.clientWhatsappMessage,
       feeMode: city.feeMode || 'fixed',
-      platformServiceFee: city.platformServiceFee ?? 0,
+      platformServiceFee: 0,
       neighborhoodCount: city.neighborhoods?.length ?? 0,
-      neighborhoodOsmSourceId: city.neighborhoodOsmSourceId,
-      neighborhoodOsmSourceLabel: city.neighborhoodOsmSourceLabel,
       deliveryValue: city.deliveryValue,
       deliveryFeeValue: city.deliveryFeeValue,
       monthlyFeeValue: city.monthlyFeeValue,

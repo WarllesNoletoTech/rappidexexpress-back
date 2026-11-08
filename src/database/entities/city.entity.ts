@@ -18,7 +18,7 @@ export class CityEntity {
   @Column({ nullable: true })
   feeMode?: 'fixed' | 'neighborhood';
 
-  // Taxa da plataforma apenas para o modo por bairro. Não substitui deliveryFeeValue (legado).
+  // Somente para leitura de histórico de pedidos antigos: não cobrada no novo modelo por bairro.
   @Column({ nullable: true })
   platformServiceFee?: number;
 
@@ -32,7 +32,7 @@ export class CityEntity {
   neighborhoodOsmSourceLabel?: string;
 
   @Column({ nullable: true })
-  neighborhoods?: Array<{ id: string; name: string; active: boolean; motoboyFee?: number; aliases?: string[] }>;
+  neighborhoods?: Array<{ id: string; name: string; active: boolean; deliveryFee?: number; motoboyFee?: number; aliases?: string[] }>;
 
   @Column({ nullable: true })
   deliveryValue?: string;

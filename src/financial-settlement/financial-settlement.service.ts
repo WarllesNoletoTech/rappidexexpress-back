@@ -187,7 +187,7 @@ export class FinancialSettlementService {
     if (deliveries.some(d => !Number.isFinite(chargeForDelivery(d)))) {
       throw new BadRequestException('Existem entregas com tarifa pendente neste período, inclusive de modalidades anteriores. Regularize os pedidos antes de gerar o fechamento.');
     }
-    const deliveryFeeValue = neighborhoodMode ? Number(city.platformServiceFee || 0) : this.getDeliveryFeeValue(city);
+    const deliveryFeeValue = neighborhoodMode ? 0 : this.getDeliveryFeeValue(city);
     if (deliveries.length && !neighborhoodMode && !deliveryFeeValue) {
       throw new BadRequestException(
         'Valor da entrega não configurado para esta cidade.',
@@ -308,7 +308,7 @@ export class FinancialSettlementService {
       : '';
 
     const rateDescription = settlement.city.feeMode === 'neighborhood'
-      ? 'Cobrança: taxa do bairro configurada pela loja + taxa da Rappidex (valor por entrega variável)'
+      ? 'Cobrança: taxa integral de entrega do bairro (definida pela administração, valor por entrega variável)'
       : `Valor por entrega: ${this.formatCurrency(settlement.deliveryFeeValue)}`;
     return `Olá, ${settlement.establishmentName}!\n\nSegue o fechamento das entregas realizadas pela Rappidex Express.\n\nCidade: ${this.formatCity(settlement.city)}\nPeríodo: ${this.formatDate(settlement.periodStart)} até ${this.formatDate(settlement.periodEnd)}\nQuantidade de entregas: ${settlement.deliveries.length}\n${rateDescription}\nTotal das entregas: ${this.formatCurrency(settlement.totalDeliveries)}${monthlyFeeLine}\nTotal a pagar: ${this.formatCurrency(settlement.total)}\n\nChave PIX para pagamento:\n${settlement.pixKey}\n\nO relatório em PDF foi gerado. Anexarei o arquivo nesta conversa.\n\nObrigado pela parceria!\nRappidex Express`;
   }
@@ -486,7 +486,7 @@ export class FinancialSettlementService {
             ['Entregas finalizadas', String(settlement.deliveries.length)],
             [
               settlement.city.feeMode === 'neighborhood' ? 'Modelo de taxa' : 'Valor por entrega',
-              settlement.city.feeMode === 'neighborhood' ? 'Por bairro + servico' : this.formatCurrency(settlement.deliveryFeeValue),
+              settlement.city.feeMode === 'neighborhood' ? 'Por bairro' : this.formatCurrency(settlement.deliveryFeeValue),
             ],
             ['Total entregas', this.formatCurrency(settlement.totalDeliveries)],
             ['Mensalidade', this.formatCurrency(settlement.monthlyFeeValue)],
@@ -495,7 +495,7 @@ export class FinancialSettlementService {
             ['Entregas finalizadas', String(settlement.deliveries.length)],
             [
               settlement.city.feeMode === 'neighborhood' ? 'Modelo de taxa' : 'Valor por entrega',
-              settlement.city.feeMode === 'neighborhood' ? 'Por bairro + servico' : this.formatCurrency(settlement.deliveryFeeValue),
+              settlement.city.feeMode === 'neighborhood' ? 'Por bairro' : this.formatCurrency(settlement.deliveryFeeValue),
             ],
             ['Total a pagar', this.formatCurrency(settlement.total)],
             ['Chave PIX', settlement.pixKey],

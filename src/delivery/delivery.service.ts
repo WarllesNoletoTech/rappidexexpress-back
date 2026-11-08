@@ -1053,7 +1053,7 @@ export class DeliveryService implements OnModuleInit {
         ]);
 
       const bairroMode = city?.feeMode === 'neighborhood';
-      const valorAdminPorEntrega = bairroMode ? Number(city.platformServiceFee || 0) : this.getAdminDeliveryFeeValue(city);
+      const valorAdminPorEntrega = bairroMode ? 0 : this.getAdminDeliveryFeeValue(city);
       // Soma real por entrega, sem multiplicar tarifa fixa em cidades com bairros.
       const isLegacy = city?.feeModeActivatedAt ? {
         $and:[
@@ -1079,7 +1079,7 @@ export class DeliveryService implements OnModuleInit {
             _id:null,
             total:{$sum:chargeExpression},
             pending:{$sum:pendingExpression},
-            platformRevenue:{$sum:{$cond:[pricedSnapshot,{$ifNull:['$platformServiceFee',0]},0]}},
+            platformRevenue:{$sum:{$cond:[pricedSnapshot,{$subtract:[{$ifNull:['$establishmentDeliveryCharge',0]},{$ifNull:['$motoboyDeliveryFee',0]}]},0]}},
             motoboyPayout:{$sum:{$cond:[pricedSnapshot,{$ifNull:['$motoboyDeliveryFee',0]},0]}},
           }},
         ]).toArray()

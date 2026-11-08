@@ -86,7 +86,7 @@ export class CityService {
       state: data.state,
       clientWhatsappMessage: data.clientWhatsappMessage?.trim() || '',
       feeMode: data.feeMode === 'neighborhood' ? 'neighborhood' : 'fixed',
-      platformServiceFee: data.platformServiceFee ?? 0,
+      platformServiceFee: 0,
       feeModeActivatedAt: data.feeMode === 'neighborhood' ? new Date(Date.now() - 3 * 60 * 60 * 1000) : undefined,
       neighborhoods: [],
       deliveryValue: data.deliveryValue?.trim() || '', 
@@ -146,7 +146,7 @@ export class CityService {
       feeModeActivatedAt: data.feeMode === 'neighborhood' && city.feeMode !== 'neighborhood'
         ? new Date(Date.now() - 3 * 60 * 60 * 1000)
         : city.feeModeActivatedAt,
-      platformServiceFee: data.platformServiceFee ?? city.platformServiceFee ?? 0,
+      platformServiceFee: 0,
       clientWhatsappMessage:
         data.clientWhatsappMessage !== undefined
           ? data.clientWhatsappMessage.trim()
