@@ -47,6 +47,10 @@ export class DeliveryEntity {
   @Column({ nullable: true })
   neighborhoodDeliveryFee?: number;
 
+  // Repasse ao entregador congelado por bairro no instante em que a tarifa foi definida.
+  @Column({ nullable: true })
+  motoboyDeliveryFee?: number;
+
   @Column({ nullable: true })
   platformServiceFee?: number;
 

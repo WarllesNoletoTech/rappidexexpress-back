@@ -21,7 +21,7 @@ export class RegionsController {
   }
 
   @Put(':cityId/neighborhoods/:neighborhoodId')
-  update(@Param('cityId') cityId: string, @Param('neighborhoodId') neighborhoodId: string, @User() user: UserRequest, @Body() body: {name?: string; active?: boolean}) {
+  update(@Param('cityId') cityId: string, @Param('neighborhoodId') neighborhoodId: string, @User() user: UserRequest, @Body() body: {name?: string; active?: boolean; motoboyFee?: number | null}) {
     return this.service.updateNeighborhood(cityId, neighborhoodId, user, body);
   }
 

@@ -26,7 +26,7 @@ export class CityEntity {
   feeModeActivatedAt?: Date;
 
   @Column({ nullable: true })
-  neighborhoods?: Array<{ id: string; name: string; active: boolean }>;
+  neighborhoods?: Array<{ id: string; name: string; active: boolean; motoboyFee?: number }>;
 
   @Column({ nullable: true })
   deliveryValue?: string;

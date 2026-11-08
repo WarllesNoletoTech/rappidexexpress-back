@@ -12,11 +12,12 @@ import { DeliveryEntity } from '../database/entities/delivery.entity';
 import { UserRequest } from '../shared/interfaces';
 import { UserType } from '../shared/constants/enums.constants';
 
-export type Neighborhood = { id: string; name: string; active: boolean };
+export type Neighborhood = { id: string; name: string; active: boolean; motoboyFee?: number };
 export type NeighborhoodRate = { neighborhoodId: string; enabled: boolean; deliveryFee: number };
 export type PricingSnapshot = {
   neighborhoodId?: string;
   neighborhoodDeliveryFee?: number;
+  motoboyDeliveryFee?: number;
   platformServiceFee?: number;
   establishmentDeliveryCharge?: number;
   feeResolutionStatus: 'FIXED' | 'RESOLVED' | 'PENDING';
@@ -120,7 +121,7 @@ export class RegionsService {
     await this.cities.updateOne({ _id: city.id }, { $set: { neighborhoods: current } });
     return { added, neighborhoods: current };
   }
-  async updateNeighborhood(cityId: string, id: string, user: UserRequest, payload: {name?: string; active?: boolean}) {
+  async updateNeighborhood(cityId: string, id: string, user: UserRequest, payload: {name?: string; active?: boolean; motoboyFee?: number | null}) {
     this.ensureAdmin(user, cityId);
     const city = await this.city(cityId);
     const neighborhoods = [...(city.neighborhoods || [])];
@@ -132,6 +133,11 @@ export class RegionsService {
         throw new BadRequestException('Nome inválido ou bairro duplicado.');
       }
       target.name = name;
+    }
+    if (payload.motoboyFee !== undefined) {
+      // Campo vazio significa repasse não configurado; não calcular zero silenciosamente.
+      if (payload.motoboyFee === null) delete target.motoboyFee;
+      else target.motoboyFee = amount(payload.motoboyFee);
     }
     if (payload.active !== undefined) {
       if (typeof payload.active !== 'boolean') throw new BadRequestException('Situação inválida.');
@@ -215,6 +221,7 @@ export class RegionsService {
     const store=await this.users.findOne({where:{id:delivery.establishment.id}});
     if(!store)throw new NotFoundException('Estabelecimento não encontrado.');
     // Preservar adicional congelado no momento do pedido, mesmo se a cidade mudou de modalidade.
+    // Tarifa do motoboy só é contabilizada após preenchimento explícito do repasse.
     const snapshot=this.calculate({ ...city, feeMode:'neighborhood',
       platformServiceFee:delivery.platformServiceFee ?? city.platformServiceFee },store,neighborhood.name);
     if(snapshot.feeResolutionStatus==='PENDING')throw new BadRequestException('A loja não possui tarifa ativa para esse bairro.');
@@ -228,17 +235,26 @@ export class RegionsService {
   // e impedir o fechamento indevido até que o pedido seja regularizado.
   calculate(city: CityEntity, store: UserEntity, neighborhoodName?: string): PricingSnapshot {
     if (city.feeMode !== 'neighborhood') {
-      return {feeResolutionStatus:'FIXED', establishmentDeliveryCharge: amount(city.deliveryFeeValue ?? 0), platformServiceFee:0};
+      // Preserva a tarifa fixa legada. O valor do motoboy continua disponível
+      // no cadastro da cidade e é congelado apenas quando for numérico.
+      const original=String(city.deliveryValue??'').replace(/R\$/gi,'').replace(/\s/g,'').trim();
+      const numeric=Number(original.includes(',')?original.replace(/\./g,'').replace(',','.'):original);
+      return {feeResolutionStatus:'FIXED', establishmentDeliveryCharge: amount(city.deliveryFeeValue ?? 0),
+        ...(original&&Number.isFinite(numeric)&&numeric>=0 ? {motoboyDeliveryFee:amount(numeric)} : {}),platformServiceFee:0};
     }
     const neighborhood = (city.neighborhoods || []).find(n => n.active && normalizedNeighborhood(n.name) === normalizedNeighborhood(neighborhoodName || ''));
     const config = (store.neighborhoodRates || []).find(r => r.neighborhoodId === neighborhood?.id && r.enabled);
-    if (!neighborhood || !config) return {feeResolutionStatus:'PENDING',
+    // Repasse é definido pela administração da cidade, não pela loja.
+    // Sem repasse explícito não permitir um pedido novo financeiro incorreto.
+    if (!neighborhood || !config || neighborhood.motoboyFee === undefined || neighborhood.motoboyFee === null) return {feeResolutionStatus:'PENDING',
       platformServiceFee:amount(city.platformServiceFee ?? 0)};
     const neighborhoodDeliveryFee = amount(config.deliveryFee);
+    const motoboyDeliveryFee = amount(neighborhood.motoboyFee);
     const platformServiceFee = amount(city.platformServiceFee ?? 0);
     return {
       neighborhoodId: neighborhood.id,
       neighborhoodDeliveryFee,
+      motoboyDeliveryFee,
       platformServiceFee,
       establishmentDeliveryCharge: Math.round((neighborhoodDeliveryFee + platformServiceFee) * 100) / 100,
       feeResolutionStatus:'RESOLVED',

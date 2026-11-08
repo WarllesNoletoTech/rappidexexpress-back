@@ -2443,6 +2443,13 @@ export class DeliveryService implements OnModuleInit {
       addressComplement: data.addressComplement ?? null,
       addressReference: data.addressReference ?? null,
       addressNeighborhood: data.addressNeighborhood ?? null,
+      // Campos financeiros preservados em qualquer atualização de status (iFood, Menu Flow, motoboy).
+      neighborhoodId: data.neighborhoodId ?? null,
+      neighborhoodDeliveryFee: data.neighborhoodDeliveryFee ?? null,
+      motoboyDeliveryFee: data.motoboyDeliveryFee ?? null,
+      platformServiceFee: data.platformServiceFee ?? null,
+      establishmentDeliveryCharge: data.establishmentDeliveryCharge ?? null,
+      feeResolutionStatus: data.feeResolutionStatus ?? null,
       addressCity: data.addressCity ?? null,
       addressState: data.addressState ?? null,
       addressZipCode: data.addressZipCode ?? null,

@@ -34,6 +34,9 @@ export class DeliveryResult {
   neighborhoodDeliveryFee?: number;
 
   @Expose()
+  motoboyDeliveryFee?: number;
+
+  @Expose()
   platformServiceFee?: number;
 
   @Expose()

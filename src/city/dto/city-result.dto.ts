@@ -21,6 +21,9 @@ export class CityResult {
   platformServiceFee?: number;
 
   @Expose()
+  neighborhoodCount?: number;
+
+  @Expose()
   deliveryValue?: string;
 
   @Expose()
@@ -49,6 +52,7 @@ export class CityResult {
       clientWhatsappMessage: city.clientWhatsappMessage,
       feeMode: city.feeMode || 'fixed',
       platformServiceFee: city.platformServiceFee ?? 0,
+      neighborhoodCount: city.neighborhoods?.length ?? 0,
       deliveryValue: city.deliveryValue,
       deliveryFeeValue: city.deliveryFeeValue,
       monthlyFeeValue: city.monthlyFeeValue,

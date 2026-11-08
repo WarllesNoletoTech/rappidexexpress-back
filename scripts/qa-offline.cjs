@@ -54,7 +54,7 @@ const {UserType,StatusDelivery}=require(path.join(ROOT,'shared/constants/enums.c
 const CITY_ID='aaaaaaaaaaaaaaaaaaaaaaaa', OTHER_CITY_ID='bbbbbbbbbbbbbbbbbbbbbbbb';
 const city={id:new ObjectId(CITY_ID),name:'Imperatriz',state:'MA',feeMode:'neighborhood',
     platformServiceFee:3,deliveryFeeValue:10,pixKey:'pix-cidade-teste', feeModeActivatedAt:new Date('2026-11-01T00:00:00.000Z'),
-    neighborhoods:[{id:'b1',name:'Bacuri',active:true},{id:'b2',name:'Vila Lobão',active:false}]};
+    neighborhoods:[{id:'b1',name:'Bacuri',active:true,motoboyFee:6},{id:'b2',name:'Vila Lobão',active:false}]};
 const store={id:'loja-1',name:'Ponto Burguer',cityId:CITY_ID,type:UserType.SHOPKEEPER,
     neighborhoodRates:[{neighborhoodId:'b1',enabled:true,deliveryFee:8}]};
 const driver={id:'motoboy-1',name:'Davi',cityId:CITY_ID,type:UserType.MOTOBOY,isActive:true};
@@ -76,7 +76,7 @@ test('Normalização e centavos brasileiros (Bacuri / Vila Lobão)',()=>{
 });
 test('Tarifa por bairro = valor da loja + adicional Rappidex, mantendo snapshot',()=>{
   const result=regions.calculate(city,store,'bacuri');
-  assert.equal(result.neighborhoodDeliveryFee,8);assert.equal(result.platformServiceFee,3);
+  assert.equal(result.neighborhoodDeliveryFee,8);assert.equal(result.motoboyDeliveryFee,6);assert.equal(result.platformServiceFee,3);
   assert.equal(result.establishmentDeliveryCharge,11);assert.equal(result.feeResolutionStatus,'RESOLVED');
   assert.equal(regions.calculate(city,store,'Vila Lobão').feeResolutionStatus,'PENDING');
   assert.equal(regions.calculate(city,store,'bairro desconhecido').feeResolutionStatus,'PENDING');
@@ -242,4 +242,26 @@ test('Regularização após mudança para taxa fixa mantém adicional original d
     assert.equal(snapshot.platformServiceFee,3);
     assert.equal(snapshot.establishmentDeliveryCharge,11);
   }finally{city.feeMode=oldMode;city.platformServiceFee=oldFee;deliveryRow=originalDelivery;}
+});
+
+test('Repasse por bairro editável somente pela administração; ausência bloqueia nova tarifação',async()=>{
+  const previous=city.neighborhoods[0].motoboyFee;
+  const originalUpdate=repoCities.updateOne;
+  repoCities.updateOne=async(_filter,operation)=>{city.neighborhoods=operation.$set.neighborhoods;return {modifiedCount:1};};
+  try{
+    await assert.rejects(regions.updateNeighborhood(CITY_ID,'b1',{id:store.id,type:UserType.SHOPKEEPER,cityId:CITY_ID},{motoboyFee:9}),UnauthorizedException);
+    await regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:7.5});
+    assert.equal(regions.calculate(city,store,'Bacuri').motoboyDeliveryFee,7.5);
+    await regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:null});
+    assert.equal(regions.calculate(city,store,'Bacuri').feeResolutionStatus,'PENDING');
+    await assert.rejects(regions.updateNeighborhood(CITY_ID,'b1',admin,{motoboyFee:-1}),BadRequestException);
+  }finally{city.neighborhoods[0].motoboyFee=previous;repoCities.updateOne=originalUpdate;}
+});
+test('Valor do motoboy preservado quando a tabela de taxas muda',()=>{
+  const initial=regions.calculate(city,store,'Bacuri');
+  city.neighborhoods[0].motoboyFee=20;
+  const newer=regions.calculate(city,store,'Bacuri');
+  assert.equal(initial.motoboyDeliveryFee,6);
+  assert.equal(newer.motoboyDeliveryFee,20);
+  city.neighborhoods[0].motoboyFee=6;
 });
