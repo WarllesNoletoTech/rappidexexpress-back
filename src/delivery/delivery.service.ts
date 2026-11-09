@@ -34,7 +34,6 @@ import {
 } from './dto';
 import { UserRequest } from '../shared/interfaces';
 import {
-  Permissions,
   StatusDelivery,
   UserType,
 } from '../shared/constants/enums.constants';
@@ -102,17 +101,9 @@ export class DeliveryService implements OnModuleInit {
   ) {}
 
   private isAdminOrSuperAdmin(user: UserEntity | UserRequest) {
-    const type = String(user?.type || '').toLowerCase();
-    const permission = String(
-      (user as UserEntity)?.permission || '',
-    ).toLowerCase();
-
-    return (
-      type === UserType.ADMIN ||
-      type === UserType.SUPERADMIN ||
-      type === Permissions.MASTER ||
-      permission === Permissions.MASTER
-    );
+    // Permissões especiais não transformam um lojista em administrador.
+    // Somente os perfis efetivos ADMIN e SUPERADMIN podem alterar entregas atribuídas.
+    return user?.type === UserType.ADMIN || user?.type === UserType.SUPERADMIN;
   }
 
   private isShopkeeperUser(user: UserEntity | UserRequest) {
@@ -154,12 +145,21 @@ export class DeliveryService implements OnModuleInit {
   private validateStoreCanUpdateDeliveryStatus(
     user: UserEntity | UserRequest,
     delivery: DeliveryEntity,
+    requestedStatus?: StatusDelivery,
   ) {
-    if (this.isAdminOrSuperAdmin(user)) {
+    if (this.isAdminOrSuperAdmin(user) || !this.isDeliveryAssigned(delivery)) {
       return;
     }
 
-    if (this.isShopkeeperUser(user) && this.isDeliveryAssigned(delivery)) {
+    // O motoboy continua podendo avançar o fluxo normal da própria entrega,
+    // mas somente ADMIN/SUPERADMIN podem cancelá-la após a atribuição.
+    if (requestedStatus === StatusDelivery.CANCELED) {
+      throw new ForbiddenException(
+        'Entrega já atribuída: somente administradores podem cancelar.',
+      );
+    }
+
+    if (this.isShopkeeperUser(user)) {
       throw new ForbiddenException(
         'Este pedido já foi atribuído a um motoboy. Apenas administradores podem alterar o status.',
       );
@@ -170,7 +170,32 @@ export class DeliveryService implements OnModuleInit {
     user: UserEntity | UserRequest,
     delivery: DeliveryEntity,
   ) {
-    this.validateStoreCanUpdateDeliveryStatus(user, delivery);
+    this.validateStoreCanUpdateDeliveryStatus(
+      user,
+      delivery,
+      StatusDelivery.CANCELED,
+    );
+  }
+
+  // Condição aplicada no próprio MongoDB para impedir cancelamento/troca
+  // por lojista se um motoboy assumir a entrega durante a requisição.
+  private getUnassignedDeliveryCondition() {
+    return {
+      motoboy: null,
+      motoboyId: null,
+      deliveryManId: null,
+      assignedTo: null,
+      courierId: null,
+      status: {
+        $nin: [
+          StatusDelivery.ONCOURSE,
+          StatusDelivery.ARRIVED_AT_STORE,
+          StatusDelivery.COLLECTED,
+          StatusDelivery.ARRIVED_AT_DESTINATION,
+          StatusDelivery.AWAITING_CODE,
+        ],
+      },
+    };
   }
 
   private async sendIfoodStatusUpdate<T>(params: {
@@ -1333,11 +1358,44 @@ export class DeliveryService implements OnModuleInit {
     let changedDelivery: Record<string, any> = {};
 
     const isAdminUser = this.isAdminOrSuperAdmin(userFinded);
-
     const isShopkeeperUser = this.isShopkeeperUser(userFinded);
 
+    if (
+      isShopkeeperUser &&
+      deliveryFinded.establishment?.id !== userFinded.id
+    ) {
+      throw new ForbiddenException('Você não é o dono dessa entrega.');
+    }
+
     if (deliveryData.status) {
-      this.validateStoreCanUpdateDeliveryStatus(userFinded, deliveryFinded);
+      this.validateStoreCanUpdateDeliveryStatus(
+        userFinded,
+        deliveryFinded,
+        deliveryData.status,
+      );
+    }
+
+    // Mesmo sem alterar o status, o lojista não pode enviar outro motoboyId.
+    // Nem um usuário com permission=master pode contornar a regra por PUT.
+    if (
+      !isAdminUser &&
+      deliveryData.motoboyId !== undefined &&
+      this.isDeliveryAssigned(deliveryFinded)
+    ) {
+      throw new ForbiddenException(
+        'Entrega já atribuída: somente administradores podem trocar o motoboy.',
+      );
+    }
+
+    // Impede atribuir e cancelar na mesma requisição para escapar da validação.
+    if (
+      !isAdminUser &&
+      deliveryData.status === StatusDelivery.CANCELED &&
+      deliveryData.motoboyId !== undefined
+    ) {
+      throw new ForbiddenException(
+        'Somente administradores podem atribuir motoboy e cancelar na mesma operação.',
+      );
     }
 
     if (isAdminUser || isShopkeeperUser) {
@@ -1570,12 +1628,19 @@ export class DeliveryService implements OnModuleInit {
       }
 
       try {
-        deliveryUpdated = await this.persistDeliveryUpdate(deliveryFinded.id, {
-          ...changedDelivery,
-          ...ifoodSyncFlags,
-          updatedAt: addHours(new Date(), -3),
-        });
+        deliveryUpdated = await this.persistDeliveryUpdate(
+          deliveryFinded.id,
+          {
+            ...changedDelivery,
+            ...ifoodSyncFlags,
+            updatedAt: addHours(new Date(), -3),
+          },
+          isShopkeeperUser && Boolean(deliveryData.status),
+        );
       } catch (error: any) {
+        if (error instanceof ConflictException || error instanceof ForbiddenException) {
+          throw error;
+        }
         this.logger.error(
           `Falha ao salvar entrega ${deliveryFinded.id} no updateDelivery. status=${error?.response?.status || error?.status || 'N/A'} message=${error?.response?.data?.message || error?.message || error}`,
           error?.stack || error,
@@ -1858,7 +1923,7 @@ export class DeliveryService implements OnModuleInit {
     }
 
     const companyId =
-      userFinded.type === UserType.ADMIN
+      this.isAdminOrSuperAdmin(userFinded)
         ? String(companyIdFromAdmin || '').trim() || null
         : userFinded.id;
 
@@ -1894,6 +1959,12 @@ export class DeliveryService implements OnModuleInit {
     let removed = 0;
 
     for (const delivery of deliveries) {
+      // A limpeza manual é uma ação do usuário. Não permite que lojista
+      // cancele uma entrega que já tenha sido assumida pelo motoboy.
+      if (this.isShopkeeperUser(userFinded) && this.isDeliveryAssigned(delivery)) {
+        continue;
+      }
+
       const link = links.find((item) => item.deliveryId === delivery.id);
       const orderId = String(link?.ifoodOrderId || '').trim();
       const merchantId = String(link?.merchantId || '').trim();
@@ -1920,12 +1991,23 @@ export class DeliveryService implements OnModuleInit {
 
       if (!shouldRemove) continue;
 
-      await this.deliveryRepository.save({
-        ...delivery,
-        status: StatusDelivery.CANCELED,
-        isActive: false,
-        updatedAt: addHours(new Date(), -3),
-      });
+      const cleanupResult = await this.deliveryRepository.updateOne(
+        {
+          id: delivery.id,
+          isActive: true,
+          ...(this.isShopkeeperUser(userFinded)
+            ? this.getUnassignedDeliveryCondition()
+            : {}),
+        } as any,
+        {
+          $set: {
+            status: StatusDelivery.CANCELED,
+            isActive: false,
+            updatedAt: addHours(new Date(), -3),
+          },
+        } as any,
+      );
+      if (!cleanupResult?.matchedCount) continue;
 
       this.ordersGateway.emitDeliveryDeleted(
         delivery.id,
@@ -1993,20 +2075,35 @@ export class DeliveryService implements OnModuleInit {
     }
 
     try {
-      await this.deliveryRepository.save({
-        ...deliveryFinded,
-        status: StatusDelivery.CANCELED,
-        isActive: false,
-        updatedAt: addHours(new Date(), -3),
-        menuFlowSyncPending:
-          deliveryFinded.source === 'MENU_FLOW'
-            ? true
-            : deliveryFinded.menuFlowSyncPending,
-        menuFlowSyncError:
-          deliveryFinded.source === 'MENU_FLOW'
-            ? ''
-            : deliveryFinded.menuFlowSyncError,
-      });
+      const cancelResult = await this.deliveryRepository.updateOne(
+        {
+          id: deliveryFinded.id,
+          isActive: true,
+          ...(this.isShopkeeperUser(userFinded)
+            ? this.getUnassignedDeliveryCondition()
+            : {}),
+        } as any,
+        {
+          $set: {
+            status: StatusDelivery.CANCELED,
+            isActive: false,
+            updatedAt: addHours(new Date(), -3),
+            menuFlowSyncPending:
+              deliveryFinded.source === 'MENU_FLOW'
+                ? true
+                : deliveryFinded.menuFlowSyncPending,
+            menuFlowSyncError:
+              deliveryFinded.source === 'MENU_FLOW'
+                ? ''
+                : deliveryFinded.menuFlowSyncError,
+          },
+        } as any,
+      );
+      if (!cancelResult?.matchedCount) {
+        throw new ConflictException(
+          'A entrega já foi atribuída ou alterada. Atualize o painel para continuar.',
+        );
+      }
 
       await this.refundCreditForCanceledDelivery(
         deliveryFinded,
@@ -2019,7 +2116,7 @@ export class DeliveryService implements OnModuleInit {
         deliveryFinded.establishment?.cityId,
       );
     } catch (error) {
-      return error;
+      throw error;
     }
 
     return { status: 200, message: 'Entrega apagada com sucesso!' };
@@ -2347,6 +2444,19 @@ export class DeliveryService implements OnModuleInit {
       throw new BadRequestException('Entrega não está aguardando liberação.');
     }
 
+    if (
+      this.isShopkeeperUser(userFinded) &&
+      delivery.establishment?.id !== userFinded.id
+    ) {
+      throw new ForbiddenException('Você não é o dono dessa entrega.');
+    }
+
+    if (this.isShopkeeperUser(userFinded) && this.isDeliveryAssigned(delivery)) {
+      throw new ForbiddenException(
+        'Entrega já atribuída: somente administradores podem trocar ou liberar o motoboy.',
+      );
+    }
+
     this.ensureCityAccess(
       userFinded,
       delivery.establishment?.cityId ?? userFinded.cityId,
@@ -2374,21 +2484,43 @@ export class DeliveryService implements OnModuleInit {
       onCoursedAt = delivery.onCoursedAt ?? addHours(new Date(), -3);
     }
 
-    const updated = await this.deliveryRepository.save(
-      this.buildPersistableDelivery({
-        ...delivery,
-        status: nextStatus,
-        motoboy,
-        onCoursedAt,
-        releasedAt: addHours(new Date(), -3),
-        releasedBy: userFinded.id,
-        updatedAt: addHours(new Date(), -3),
-        menuFlowSyncPending:
-          delivery.source === 'MENU_FLOW' ? true : delivery.menuFlowSyncPending,
-        menuFlowSyncError:
-          delivery.source === 'MENU_FLOW' ? '' : delivery.menuFlowSyncError,
-      }),
-    );
+    const releasePayload = this.buildPersistableDelivery({
+      ...delivery,
+      status: nextStatus,
+      motoboy,
+      onCoursedAt,
+      releasedAt: addHours(new Date(), -3),
+      releasedBy: userFinded.id,
+      updatedAt: addHours(new Date(), -3),
+      menuFlowSyncPending:
+        delivery.source === 'MENU_FLOW' ? true : delivery.menuFlowSyncPending,
+      menuFlowSyncError:
+        delivery.source === 'MENU_FLOW' ? '' : delivery.menuFlowSyncError,
+    });
+
+    let updated: DeliveryEntity;
+    if (this.isShopkeeperUser(userFinded)) {
+      // Compare-and-set: o lojista só libera se o pedido continuar sem motoboy.
+      const { internalId, id, ...setPayload } = releasePayload;
+      void internalId;
+      void id;
+      const releaseResult = await this.deliveryRepository.updateOne(
+        {
+          id: delivery.id,
+          ...this.getUnassignedDeliveryCondition(),
+          status: StatusDelivery.AWAITING_RELEASE,
+        } as any,
+        { $set: setPayload } as any,
+      );
+      if (!releaseResult?.matchedCount) {
+        throw new ConflictException(
+          'Entrega já atribuída ou liberada por outro usuário. Atualize o painel.',
+        );
+      }
+      updated = await this.deliveryRepository.findOneByOrFail({ id: delivery.id });
+    } else {
+      updated = await this.deliveryRepository.save(releasePayload);
+    }
 
     const ifoodLink = await this.ifoodOrderLinkService.findByDeliveryId(
       delivery.id,
@@ -2491,6 +2623,7 @@ export class DeliveryService implements OnModuleInit {
 
     return (
       delivery.status === StatusDelivery.PENDING &&
+      !this.isDeliveryAssigned(delivery) &&
       !!requestedMotoboyId &&
       (!deliveryData.status || deliveryData.status === StatusDelivery.ONCOURSE)
     );
@@ -2499,6 +2632,7 @@ export class DeliveryService implements OnModuleInit {
   private async persistDeliveryUpdate(
     deliveryId: string,
     data: Record<string, any>,
+    requireUnassigned = false,
   ) {
     const currentDelivery = await this.deliveryRepository.findOneByOrFail({
       id: deliveryId,
@@ -2527,11 +2661,19 @@ export class DeliveryService implements OnModuleInit {
     void id;
 
     const result = await this.deliveryRepository.updateOne(
-      { id: deliveryId } as any,
+      {
+        id: deliveryId,
+        ...(requireUnassigned ? this.getUnassignedDeliveryCondition() : {}),
+      } as any,
       { $set: setPayload } as any,
     );
 
     if (!result?.matchedCount) {
+      if (requireUnassigned) {
+        throw new ConflictException(
+          'A entrega já foi atribuída ou alterada. Atualize o painel para continuar.',
+        );
+      }
       throw new BadRequestException('Entrega não encontrada.');
     }
 

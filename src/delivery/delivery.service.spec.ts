@@ -619,11 +619,11 @@ describe('DeliveryService', () => {
         { status: StatusDelivery.PENDING, motoboyId: 'motoboy-1' },
       ),
     ).toThrow(
-      'Este pedido já foi atribuído a um motoboy. Apenas administradores podem alterar o status.',
+      'Entrega já atribuída: somente administradores podem cancelar.',
     );
   });
 
-  it('permite admin, super admin e master alterar status de pedido atribuído', () => {
+  it('permite apenas admin e superadmin alterar status de pedido atribuído', () => {
     const delivery = {
       status: StatusDelivery.COLLECTED,
       motoboy: { id: 'motoboy-1' },
@@ -646,7 +646,162 @@ describe('DeliveryService', () => {
         { type: UserType.SHOPKEEPER, permission: Permissions.MASTER },
         delivery,
       ),
-    ).not.toThrow();
+    ).toThrow();
+  });
+
+
+  describe('bloqueio de cancelamento e troca após atribuição', () => {
+    const cityId = 'city-1';
+    const assignedDelivery = {
+      id: 'delivery-1',
+      isActive: true,
+      status: StatusDelivery.ONCOURSE,
+      motoboy: { id: 'motoboy-1' },
+      establishment: { id: 'shop-1', cityId },
+    };
+
+    beforeEach(() => {
+      deliveryRepository.findOneOrFail.mockResolvedValue(assignedDelivery);
+      deliveryRepository.findOneByOrFail.mockResolvedValue(assignedDelivery);
+      deliveryRepository.findOne.mockResolvedValue(assignedDelivery);
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue(null);
+      deliveryRepository.updateOne.mockResolvedValue({ matchedCount: 1 });
+    });
+
+    it.each([UserType.SHOPKEEPER, UserType.SHOPKEEPERADMIN])(
+      'nega troca de motoboy pelo perfil %s sem status no PUT',
+      async (type) => {
+        userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type, cityId });
+        await expect(
+          service.updateDelivery(
+            'delivery-1',
+            { motoboyId: 'motoboy-2' },
+            { id: 'shop-1', type } as any,
+          ),
+        ).rejects.toThrow('somente administradores podem trocar o motoboy');
+        expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+        expect(deliveryRepository.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('nega cancelamento via PUT para lojista com entrega atribuída', async () => {
+      userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type: UserType.SHOPKEEPER, cityId });
+      await expect(
+        service.updateDelivery(
+          'delivery-1',
+          { status: StatusDelivery.CANCELED },
+          { id: 'shop-1', type: UserType.SHOPKEEPER } as any,
+        ),
+      ).rejects.toThrow('somente administradores podem cancelar');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('nega cancelamento via DELETE para lojista com entrega atribuída', async () => {
+      userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type: UserType.SHOPKEEPER, cityId });
+      await expect(
+        service.deleteDelivery('delivery-1', { id: 'shop-1', type: UserType.SHOPKEEPER } as any),
+      ).rejects.toThrow('somente administradores podem cancelar');
+      expect(ifoodOrdersService.requestCancellation).not.toHaveBeenCalled();
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('nega liberação/reatribuição alternativa pelo lojista quando já há motoboy', async () => {
+      userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type: UserType.SHOPKEEPERADMIN, cityId });
+      deliveryRepository.findOneByOrFail.mockResolvedValue({
+        ...assignedDelivery,
+        status: StatusDelivery.AWAITING_RELEASE,
+      });
+      await expect(
+        service.releaseDelivery(
+          'delivery-1',
+          { id: 'shop-1', type: UserType.SHOPKEEPERADMIN } as any,
+          { motoboyId: 'motoboy-2' },
+        ),
+      ).rejects.toThrow('somente administradores podem trocar ou liberar o motoboy');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it.each([UserType.ADMIN, UserType.SUPERADMIN])(
+      'autoriza cancelamento da entrega atribuída pelo perfil %s',
+      (type) => {
+        expect(() =>
+          (service as any).validateStoreCanUpdateDeliveryStatus(
+            { id: 'admin-1', type },
+            assignedDelivery,
+            StatusDelivery.CANCELED,
+          ),
+        ).not.toThrow();
+      },
+    );
+
+    it('nega cancelamento por motoboy atribuído via PUT', async () => {
+      userRepository.findOneBy.mockResolvedValue({ id: 'motoboy-1', type: UserType.MOTOBOY, cityId });
+      await expect(
+        service.updateDelivery(
+          'delivery-1',
+          { status: StatusDelivery.CANCELED },
+          { id: 'motoboy-1', type: UserType.MOTOBOY } as any,
+        ),
+      ).rejects.toThrow('somente administradores podem cancelar');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('impede o lojista de alterar entrega de outro estabelecimento', async () => {
+      userRepository.findOneBy.mockResolvedValue({ id: 'shop-2', type: UserType.SHOPKEEPER, cityId });
+      await expect(
+        service.updateDelivery(
+          'delivery-1',
+          { observation: 'alterada' },
+          { id: 'shop-2', type: UserType.SHOPKEEPER } as any,
+        ),
+      ).rejects.toThrow('Você não é o dono dessa entrega.');
+    });
+
+    it.each([UserType.ADMIN, UserType.SUPERADMIN])(
+      'permite reatribuição pelo perfil %s',
+      async (type) => {
+        const admin = { id: 'admin-1', type, cityId };
+        const newMotoboy = { id: 'motoboy-2', type: UserType.MOTOBOY, cityId };
+        userRepository.findOneBy.mockImplementation(async ({ id }) =>
+          id === 'motoboy-2' ? newMotoboy : admin,
+        );
+        deliveryRepository.findOneByOrFail.mockResolvedValue({
+          ...assignedDelivery,
+          motoboy: newMotoboy,
+        });
+
+        await expect(
+          service.updateDelivery(
+            'delivery-1',
+            { motoboyId: 'motoboy-2' },
+            { id: 'admin-1', type } as any,
+          ),
+        ).resolves.toEqual(expect.objectContaining({ motoboyId: 'motoboy-2' }));
+        expect(deliveryRepository.updateOne).toHaveBeenCalled();
+      },
+    );
+
+    it('protege o cancelamento contra atribuição concorrente no banco', async () => {
+      const unassignedDelivery = {
+        ...assignedDelivery,
+        status: StatusDelivery.PENDING,
+        motoboy: null,
+      };
+      userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type: UserType.SHOPKEEPER, cityId });
+      deliveryRepository.findOneOrFail.mockResolvedValue(unassignedDelivery);
+      deliveryRepository.findOneByOrFail.mockResolvedValue(unassignedDelivery);
+      deliveryRepository.updateOne.mockResolvedValue({ matchedCount: 0 });
+
+      await expect(
+        service.updateDelivery(
+          'delivery-1',
+          { status: StatusDelivery.CANCELED },
+          { id: 'shop-1', type: UserType.SHOPKEEPER } as any,
+        ),
+      ).rejects.toThrow('A entrega já foi atribuída ou alterada');
+      const filter = deliveryRepository.updateOne.mock.calls[0][0];
+      expect(filter).toEqual(expect.objectContaining({ id: 'delivery-1', motoboy: null }));
+    });
   });
 
   it('permite motoboy atualizar status no fluxo normal dele', async () => {
