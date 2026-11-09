@@ -16,6 +16,7 @@ import { UserEntity } from './database/entities';
 import { SecurityController } from './security.controller';
 import { SecurityService } from './security.service';
 import { MenuFlowIntegrationModule } from './menuflow-integration/menuflow-integration.module';
+import { MotoProIntegrationModule } from './motopro-integration/motopro-integration.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { MenuFlowIntegrationModule } from './menuflow-integration/menuflow-integ
     IfoodModule,
     FinancialSettlementModule,
     MenuFlowIntegrationModule,
+    MotoProIntegrationModule,
     TypeOrmModule.forFeature([UserEntity]),
   ],
   controllers: [AppController, SecurityController],

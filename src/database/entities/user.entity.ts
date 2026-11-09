@@ -89,6 +89,10 @@ export class UserEntity {
   @Column()
   token: string;
 
+  @Column({nullable:true}) motoproLinkCodeHash?:string;
+  @Column({nullable:true}) motoproLinkExpiresAt?:Date;
+  @Column({nullable:true}) motoproLinkedUserId?:string;
+
   @Column({ default: false })
   useIfoodIntegration: boolean;
 
