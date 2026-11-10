@@ -705,20 +705,110 @@ describe('DeliveryService', () => {
       expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
     });
 
-    it('nega liberação/reatribuição alternativa pelo lojista quando já há motoboy', async () => {
-      userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type: UserType.SHOPKEEPERADMIN, cityId });
+    it.each([UserType.SHOPKEEPER, UserType.SHOPKEEPERADMIN])(
+      'libera entrega iFood já atribuída, sem trocar motoboy, para o perfil %s',
+      async (type) => {
+        const shopkeeper = { id: 'shop-1', type, cityId };
+        const motoboy = { id: 'motoboy-1', type: UserType.MOTOBOY, cityId };
+        const waiting = { ...assignedDelivery, status: StatusDelivery.AWAITING_RELEASE };
+        const released = {
+          ...waiting,
+          status: StatusDelivery.ONCOURSE,
+          releasedBy: shopkeeper.id,
+        };
+        userRepository.findOneBy.mockImplementation(async ({ id }) =>
+          id === 'motoboy-1' ? motoboy : shopkeeper,
+        );
+        deliveryRepository.findOneByOrFail
+          .mockResolvedValueOnce(waiting)
+          .mockResolvedValueOnce(released);
+        ifoodOrderLinkService.findByDeliveryId.mockResolvedValue(null);
+
+        await expect(
+          service.releaseDelivery('delivery-1', { id: shopkeeper.id, type } as any, {}),
+        ).resolves.toEqual(expect.objectContaining({ status: StatusDelivery.ONCOURSE }));
+
+        const [filter, mutation] = deliveryRepository.updateOne.mock.calls[0];
+        expect(filter).toEqual(expect.objectContaining({
+          id: waiting.id,
+          status: StatusDelivery.AWAITING_RELEASE,
+          'motoboy.id': 'motoboy-1',
+        }));
+        expect(filter).not.toHaveProperty('motoboy', null);
+        expect(mutation.$set).toEqual(expect.objectContaining({
+          status: StatusDelivery.ONCOURSE,
+          motoboy: expect.objectContaining({ id: 'motoboy-1' }),
+          releasedBy: shopkeeper.id,
+        }));
+      },
+    );
+
+    it('permite liberar com o ID do MESMO motoboy salvo', async () => {
+      const shopkeeper = { id: 'shop-1', type: UserType.SHOPKEEPERADMIN, cityId };
+      const waiting = { ...assignedDelivery, status: StatusDelivery.AWAITING_RELEASE };
+      userRepository.findOneBy.mockImplementation(async ({ id }) =>
+        id === 'motoboy-1'
+          ? { id, type: UserType.MOTOBOY, cityId }
+          : shopkeeper,
+      );
+      deliveryRepository.findOneByOrFail
+        .mockResolvedValueOnce(waiting)
+        .mockResolvedValueOnce({ ...waiting, status: StatusDelivery.ONCOURSE });
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue(null);
+      await expect(service.releaseDelivery(waiting.id, shopkeeper as any, {
+        motoboyId: 'motoboy-1',
+      })).resolves.toEqual(expect.objectContaining({ status: StatusDelivery.ONCOURSE }));
+    });
+
+    it.each([UserType.SHOPKEEPER, UserType.SHOPKEEPERADMIN])(
+      'impede reatribuição do pedido aguardando liberação ao perfil %s',
+      async (type) => {
+        userRepository.findOneBy.mockResolvedValue({ id: 'shop-1', type, cityId });
+        deliveryRepository.findOneByOrFail.mockResolvedValue({
+          ...assignedDelivery,
+          status: StatusDelivery.AWAITING_RELEASE,
+        });
+        await expect(
+          service.releaseDelivery(
+            'delivery-1',
+            { id: 'shop-1', type } as any,
+            { motoboyId: 'motoboy-2' },
+          ),
+        ).rejects.toThrow('somente administradores podem trocar o motoboy');
+        expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejeita liberação concorrente se outro usuário mudou o motoboy ou status', async () => {
+      const shopkeeper = { id: 'shop-1', type: UserType.SHOPKEEPERADMIN, cityId };
+      userRepository.findOneBy.mockImplementation(async ({ id }) =>
+        id === 'motoboy-1'
+          ? { id, type: UserType.MOTOBOY, cityId }
+          : shopkeeper,
+      );
       deliveryRepository.findOneByOrFail.mockResolvedValue({
         ...assignedDelivery,
         status: StatusDelivery.AWAITING_RELEASE,
       });
-      await expect(
-        service.releaseDelivery(
-          'delivery-1',
-          { id: 'shop-1', type: UserType.SHOPKEEPERADMIN } as any,
-          { motoboyId: 'motoboy-2' },
-        ),
-      ).rejects.toThrow('somente administradores podem trocar ou liberar o motoboy');
-      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+      deliveryRepository.updateOne.mockResolvedValue({ matchedCount: 0 });
+      await expect(service.releaseDelivery('delivery-1', shopkeeper as any, {}))
+        .rejects.toThrow('Entrega já atribuída ou liberada por outro usuário');
+    });
+
+    it('permite liberar sem motoboy salvo e mantém PENDENTE', async () => {
+      const shopkeeper = { id: 'shop-1', type: UserType.SHOPKEEPERADMIN, cityId };
+      const waiting = {
+        ...assignedDelivery, status: StatusDelivery.AWAITING_RELEASE, motoboy: null,
+      };
+      userRepository.findOneBy.mockResolvedValue(shopkeeper);
+      deliveryRepository.findOneByOrFail
+        .mockResolvedValueOnce(waiting)
+        .mockResolvedValueOnce({ ...waiting, status: StatusDelivery.PENDING });
+      ifoodOrderLinkService.findByDeliveryId.mockResolvedValue(null);
+      await expect(service.releaseDelivery(waiting.id, shopkeeper as any, {}))
+        .resolves.toEqual(expect.objectContaining({ status: StatusDelivery.PENDING }));
+      expect(deliveryRepository.updateOne.mock.calls[0][0])
+        .toEqual(expect.objectContaining({ motoboy: null, status: StatusDelivery.AWAITING_RELEASE }));
     });
 
     it.each([UserType.ADMIN, UserType.SUPERADMIN])(

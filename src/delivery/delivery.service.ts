@@ -1635,7 +1635,8 @@ export class DeliveryService implements OnModuleInit {
             ...ifoodSyncFlags,
             updatedAt: addHours(new Date(), -3),
           },
-          isShopkeeperUser && Boolean(deliveryData.status),
+          isShopkeeperUser &&
+            (Boolean(deliveryData.status) || deliveryData.motoboyId !== undefined),
         );
       } catch (error: any) {
         if (error instanceof ConflictException || error instanceof ForbiddenException) {
@@ -2451,12 +2452,6 @@ export class DeliveryService implements OnModuleInit {
       throw new ForbiddenException('Você não é o dono dessa entrega.');
     }
 
-    if (this.isShopkeeperUser(userFinded) && this.isDeliveryAssigned(delivery)) {
-      throw new ForbiddenException(
-        'Entrega já atribuída: somente administradores podem trocar ou liberar o motoboy.',
-      );
-    }
-
     this.ensureCityAccess(
       userFinded,
       delivery.establishment?.cityId ?? userFinded.cityId,
@@ -2466,7 +2461,26 @@ export class DeliveryService implements OnModuleInit {
     const motoboyIdAlreadySaved = this.normalizeMotoboyId(
       delivery?.motoboy?.id,
     );
-    const finalMotoboyId = motoboyIdFromBody || motoboyIdAlreadySaved;
+    const isPreviouslyAssigned = this.isDeliveryAssigned(delivery);
+
+    // Selecionar/salvar não libera a entrega automaticamente. Enquanto ela estiver
+    // em AGUARDANDO_LIBERACAO, o lojista pode LIBERAR para o mesmo motoboy salvo,
+    // mas não pode trocá-lo ou retirar a atribuição.
+    if (this.isShopkeeperUser(userFinded) && isPreviouslyAssigned) {
+      if (
+        !motoboyIdAlreadySaved ||
+        (motoboyIdFromBody && motoboyIdFromBody !== motoboyIdAlreadySaved)
+      ) {
+        throw new ForbiddenException(
+          'Entrega já atribuída: somente administradores podem trocar o motoboy.',
+        );
+      }
+    }
+
+    const finalMotoboyId =
+      this.isShopkeeperUser(userFinded) && isPreviouslyAssigned
+        ? motoboyIdAlreadySaved
+        : motoboyIdFromBody || motoboyIdAlreadySaved;
 
     let motoboy = null;
     let nextStatus = StatusDelivery.PENDING;
@@ -2500,14 +2514,19 @@ export class DeliveryService implements OnModuleInit {
 
     let updated: DeliveryEntity;
     if (this.isShopkeeperUser(userFinded)) {
-      // Compare-and-set: o lojista só libera se o pedido continuar sem motoboy.
+      // Compare-and-set: permite liberar sem atribuição prévia ou liberar
+      // exclusivamente para o MESMO motoboy já salvo. Nunca permite reatribuir.
+      // A verificação é atômica: troca concorrente, cancelamento ou outra liberação
+      // invalidam esta operação em vez de sobrescrever o estado atualizado.
       const { internalId, id, ...setPayload } = releasePayload;
       void internalId;
       void id;
       const releaseResult = await this.deliveryRepository.updateOne(
         {
           id: delivery.id,
-          ...this.getUnassignedDeliveryCondition(),
+          ...(isPreviouslyAssigned
+            ? { 'motoboy.id': motoboyIdAlreadySaved }
+            : this.getUnassignedDeliveryCondition()),
           status: StatusDelivery.AWAITING_RELEASE,
         } as any,
         { $set: setPayload } as any,
