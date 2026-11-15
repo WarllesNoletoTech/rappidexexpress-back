@@ -556,8 +556,11 @@ export class DeliveryService implements OnModuleInit {
             return {};
           }
 
-          throw new BadRequestException(
-            'O pedido ainda não está elegível para validação do código no iFood (DELIVERY_DROP_CODE_REQUESTED).',
+          // Um evento pode ter sido perdido no polling antigo. A ausência
+          // do registro local não determina a elegibilidade no iFood.
+          // A API externa deve aceitar ou rejeitar o código com segurança.
+          this.logger.warn(
+            `DELIVERY_DROP_CODE_REQUESTED ausente no banco local para orderId=${orderId} merchantId=${merchantId}. Tentando validação pela API do iFood.`,
           );
         }
 
