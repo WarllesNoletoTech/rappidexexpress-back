@@ -319,4 +319,45 @@ describe('Persistência de conclusão antes do ACK', () => {
     expect(eventService.markAsProcessed.mock.invocationCallOrder[0])
       .toBeLessThan(ifoodPollingService.acknowledgeEvents.mock.invocationCallOrder[0]);
   });
+
+  it('persiste DDCR antes do ACK mesmo quando a importação falha', async () => {
+    const event = {
+      id: 'evt-ddcr',
+      orderId: 'ord-2',
+      merchantId: 'merchant-2',
+      code: 'DDCR',
+      fullCode: 'DELIVERY_DROP_CODE_REQUESTED',
+    };
+    const pollingService = {
+      pollEventsWithMetadata: jest.fn().mockResolvedValue({
+        events: [event],
+        metadata: { maxMerchantsPerBatch: 1 },
+      }),
+      acknowledgeEvents: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const eventService = {
+      findByEventId: jest.fn().mockResolvedValue(null),
+      markAsProcessed: jest.fn().mockResolvedValue(undefined),
+      markAsAcknowledged: jest.fn().mockResolvedValue(undefined),
+      findUnacknowledgedEvents: jest.fn().mockResolvedValue([]),
+    } as any;
+    const importer = {
+      importFromEvents: jest.fn().mockRejectedValue(new Error('import failed')),
+    } as any;
+    const service = new IfoodAutoPollingService(
+      { get: jest.fn() } as any,
+      pollingService,
+      importer,
+      eventService,
+      {} as any,
+    );
+
+    await (service as any).runPollingCycle();
+
+    expect(eventService.markAsProcessed).toHaveBeenCalledWith(
+      event, false, 'POLLING',
+    );
+    expect(eventService.markAsProcessed.mock.invocationCallOrder[0])
+      .toBeLessThan(pollingService.acknowledgeEvents.mock.invocationCallOrder[0]);
+  });
 });
