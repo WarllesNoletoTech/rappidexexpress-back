@@ -90,5 +90,64 @@ describe('IfoodOrdersService', () => {
 
     expect(delivery.status).toBe(StatusDelivery.AWAITING_RELEASE);
     expect(delivery.establishmentId).toBe('shopkeeper-1');
+  }); 
+  it('rejeita código quando o iFood responde valid=false com HTTP 200', async () => {
+    const service = new IfoodOrdersService(
+      { getAccessToken: jest.fn().mockResolvedValue('token') } as any,
+      { request: jest.fn().mockResolvedValue({ data: { valid: false } }) } as any,
+      { get: jest.fn() } as any,
+      {} as any,
+    );
+
+    await expect(service.verifyDeliveryCode('order-1', '1234', 'merchant-1'))
+      .rejects.toThrow('Código de entrega do iFood inválido.');
+  });
+
+  it('rejeita código quando iFood retorna 422 por divergência', async () => {
+    const request = jest.fn().mockRejectedValue(
+      Object.assign(new Error('rejected'), {
+        response: { status: 422, data: { message: 'code does not match' } },
+      }),
+    );
+    const service = new IfoodOrdersService(
+      { getAccessToken: jest.fn().mockResolvedValue('token') } as any,
+      { request } as any,
+      { get: jest.fn() } as any,
+      {} as any,
+    );
+    await expect(service.verifyDeliveryCode('order-2', '1234', 'merchant-1'))
+      .rejects.toThrow('inválido ou rejeitado');
+  });
+
+  it('não considera pedido cancelado como código validado', async () => {
+    const request = jest.fn().mockRejectedValue(
+      Object.assign(new Error('cancelled'), {
+        response: { status: 409, data: { message: 'order cancelled' } },
+      }),
+    );
+    const service = new IfoodOrdersService(
+      { getAccessToken: jest.fn().mockResolvedValue('token') } as any,
+      { request } as any,
+      { get: jest.fn() } as any,
+      {} as any,
+    );
+    await expect(service.verifyDeliveryCode('order-3', '1234', 'merchant-1'))
+      .rejects.toThrow('O iFood não autorizou a validação');
+  });
+
+  it('explica quando pedido não está elegível (412)', async () => {
+    const request = jest.fn().mockRejectedValue(
+      Object.assign(new Error('precondition'), {
+        response: { status: 412, data: { message: 'precondition failed' } },
+      }),
+    );
+    const service = new IfoodOrdersService(
+      { getAccessToken: jest.fn().mockResolvedValue('token') } as any,
+      { request } as any,
+      { get: jest.fn() } as any,
+      {} as any,
+    );
+    await expect(service.verifyDeliveryCode('order-4', '1234', 'merchant-1'))
+      .rejects.toThrow('O iFood não autorizou a validação');
   });
 });

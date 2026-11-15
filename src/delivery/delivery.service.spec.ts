@@ -447,12 +447,13 @@ describe('DeliveryService', () => {
     );
   });
 
-  it('deve rejeitar finalização quando não houver evento DELIVERY_DROP_CODE_REQUESTED', async () => {
+  it('deve consultar a API iFood quando o evento de código não foi salvo localmente', async () => {
     ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
       ifoodOrderId: 'ifood-4',
       merchantId: 'merchant-4',
     });
     ifoodEventService.hasDeliveryDropCodeRequested.mockResolvedValue(false);
+    ifoodOrdersService.getOrderDetails.mockResolvedValue({ orderStatus: 'DISPATCHED' });
 
     await expect(
       (service as any).syncIfoodIfNeeded(
@@ -464,7 +465,35 @@ describe('DeliveryService', () => {
         {},
         { status: StatusDelivery.FINISHED, deliveryCode: '9999' },
       ),
-    ).rejects.toThrow('DELIVERY_DROP_CODE_REQUESTED');
+    ).resolves.toEqual({});
+
+    expect(ifoodOrdersService.verifyDeliveryCode).toHaveBeenCalledWith(
+      'ifood-4', '9999', 'merchant-4',
+    );
+  });
+
+  it('não deve concluir a entrega se o iFood recusar o código sem evento local', async () => {
+    ifoodOrderLinkService.findByDeliveryId.mockResolvedValue({
+      ifoodOrderId: 'ifood-4b',
+      merchantId: 'merchant-4b',
+    });
+    ifoodEventService.hasDeliveryDropCodeRequested.mockResolvedValue(false);
+    ifoodOrdersService.getOrderDetails.mockResolvedValue({ orderStatus: 'DISPATCHED' });
+    ifoodOrdersService.verifyDeliveryCode.mockRejectedValueOnce(
+      new Error('O iFood ainda não autorizou a validação'),
+    );
+
+    await expect(
+      (service as any).syncIfoodIfNeeded(
+        {
+          id: 'delivery-4b',
+          status: StatusDelivery.AWAITING_CODE,
+          ifoodArrivedAtDestinationSynced: true,
+        },
+        {},
+        { status: StatusDelivery.FINISHED, deliveryCode: '9999' },
+      ),
+    ).rejects.toThrow('O iFood ainda não autorizou a validação');
   });
 
   it('deve finalizar localmente quando iFood já estiver concluído', async () => {

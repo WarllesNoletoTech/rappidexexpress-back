@@ -158,20 +158,25 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
           this.ifoodImportService.isEligibleImportEvent?.(event) === true,
       );
 
-      // Salvar comprovantes de conclusão ANTES do ACK. Se o processamento da
-      // entrega falhar, o evento continuará disponível para reconciliação.
-      const securedConclusionEventIds = new Set<string>();
+      // Persistir eventos críticos ANTES do ACK. Caso a importação falhe
+      // após o ACK, a elegibilidade de código e a conclusão ficam no Mongo.
+      const securedCriticalEventIds = new Set<string>();
       for (const event of freshEvents) {
         const eventId = String(event?.id || '').trim();
+        const fullCode = String(event?.fullCode || '').trim().toUpperCase();
+        const code = String(event?.code || '').trim().toUpperCase();
+        const isConclusion = code === 'CON' || fullCode === 'CONCLUDED';
+        const isDropCodeRequested =
+          code === 'DDCR' || fullCode === 'DELIVERY_DROP_CODE_REQUESTED';
         if (
           !eventId ||
-          securedConclusionEventIds.has(eventId) ||
-          !(event?.code === 'CON' || event?.fullCode === 'CONCLUDED')
+          securedCriticalEventIds.has(eventId) ||
+          (!isConclusion && !isDropCodeRequested)
         ) {
           continue;
         }
         await this.ifoodEventService.markAsProcessed(event, false, 'POLLING');
-        securedConclusionEventIds.add(eventId);
+        securedCriticalEventIds.add(eventId);
       }
 
       if (polledAckTargets.length > 0) {
@@ -269,7 +274,7 @@ export class IfoodAutoPollingService implements OnModuleInit, OnModuleDestroy {
         await this.ifoodImportService.importFromEvents(freshEvents);
 
         for (const event of freshEvents) {
-          if (securedConclusionEventIds.has(String(event?.id || '').trim())) {
+          if (securedCriticalEventIds.has(String(event?.id || '').trim())) {
             continue; // Já persistido antes do ACK; acknowledged atualizado.
           }
           await this.ifoodEventService.markAsProcessed(event, true, 'POLLING');
