@@ -245,15 +245,30 @@ export class IfoodOrdersService {
         },
       );
 
+      // Respostas HTTP 200 também podem indicar código recusado no corpo.
+      if (
+        (response.data as any)?.valid === false ||
+        (response.data as any)?.success === false ||
+        (response.data as any)?.accepted === false
+      ) {
+        throw new BadRequestException('Código de entrega do iFood inválido.');
+      }
+
       this.logger.log(
         `Código de entrega verificado no iFood. OrderId: ${orderId}`,
       );
 
       return response.data;
     } catch (error: any) {
-      const status = error?.response?.status;
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      const status = Number(error?.response?.status || 0);
       const data = error?.response?.data;
-      const description = data?.description || data?.error?.message || '';
+      const description = String(
+        data?.description || data?.message || data?.error?.message || '',
+      ).toLowerCase();
 
       this.logger.error('Erro ao validar código de entrega no iFood', {
         status,
@@ -262,26 +277,22 @@ export class IfoodOrdersService {
       });
 
       if (
-        status === 400 &&
-        String(description).toLowerCase().includes('invalid')
+        status === 422 ||
+        (status === 400 && /invalid|incorrect|wrong|código|codigo|code/.test(description))
       ) {
-        throw new BadRequestException('Código de entrega do iFood inválido.');
-      }
-
-      if (this.isOrderInTerminalState(status, data)) {
-        this.logger.warn(
-          `Pedido ${orderId} já está em estado terminal no iFood; ignorando validação de código de entrega.`,
+        throw new BadRequestException(
+          'Código de entrega do iFood inválido ou rejeitado. Confirme o código com o cliente.',
         );
-
-        return {
-          success: true,
-          accepted: true,
-          orderId,
-          message:
-            'Pedido já finalizado/cancelado no iFood. Validação do código ignorada.',
-        };
       }
 
+      if ([404, 409, 412].includes(status)) {
+        throw new BadRequestException(
+          'O iFood não autorizou a validação neste momento. Confirme a chegada ao destino e a situação do pedido no iFood.',
+        );
+      }
+
+      // Um pedido cancelado NÃO pode ser aceito como entregue apenas
+      // porque a API retornou erro de estado terminal.
       throw new InternalServerErrorException(
         'Não foi possível validar o código de entrega no iFood.',
       );
