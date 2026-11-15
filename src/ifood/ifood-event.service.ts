@@ -46,7 +46,10 @@ export class IfoodEventService implements OnModuleInit {
     const events = await this.findByOrderId(orderId);
 
     return events.some(
-      (event) => event?.fullCode === 'DELIVERY_DROP_CODE_REQUESTED',
+      (event) =>
+        String(event?.fullCode || '').trim().toUpperCase() ===
+          'DELIVERY_DROP_CODE_REQUESTED' ||
+        String(event?.code || '').trim().toUpperCase() === 'DDCR',
     );
   }
 
