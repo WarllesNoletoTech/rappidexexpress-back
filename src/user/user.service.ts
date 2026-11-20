@@ -393,7 +393,7 @@ export class UserService {
   private ensureCityAccess(requester: UserEntity, resourceCityId: string) {
     if (
       requester.type !== UserType.SUPERADMIN &&
-      requester.cityId !== resourceCityId
+      String(requester.cityId || '') !== String(resourceCityId || '')
     ) {
       throw new UnauthorizedException(
         'Você não tem permissão para acessar recursos de outra cidade.',
@@ -534,12 +534,23 @@ export class UserService {
       };
     }
 
-    const requesterCityId = requester.cityId;
+    // O seletor usa a cidade salva no perfil do administrador. Não mistura
+    // entregadores de outras cidades (nem usa uma lista paginada de usuários).
+    const requesterCityId = String(requester.cityId || '').trim();
+    if (requester.type !== UserType.SUPERADMIN && !requesterCityId) {
+      throw new BadRequestException('Administrador sem cidade vinculada. Configure a cidade no cadastro.');
+    }
 
     if (requesterCityId) {
+      // Cadastros legados podem guardar a cidade como ObjectId no Mongo,
+      // enquanto os cadastros recentes utilizam string hexadecimal.
+      const cityIds: Array<string | ObjectId> = [requesterCityId];
+      if (ObjectId.isValid(requesterCityId)) {
+        cityIds.push(new ObjectId(requesterCityId));
+      }
       where = {
         ...where,
-        cityId: requesterCityId,
+        cityId: cityIds.length > 1 ? { $in: cityIds } : requesterCityId,
       };
     }
     try {
@@ -548,14 +559,11 @@ export class UserService {
         order,
       });
 
-      const scopedMotoboys =
-        requester.type === UserType.SUPERADMIN
-          ? motoboys
-          : motoboys.filter(
-              (motoboy) =>
-                motoboy.cityId &&
-                motoboy.cityId.toString() === requesterCityId?.toString(),
-            );
+      const scopedMotoboys = motoboys.filter(
+        (motoboy) =>
+          motoboy.type === UserType.MOTOBOY &&
+          (!requesterCityId || String(motoboy.cityId || '').trim() === requesterCityId),
+      );
 
       let motoboysWithDeliveriesCount: MotoboyDeliverySummary[];
 
@@ -569,11 +577,24 @@ export class UserService {
         this.logger.warn(
           `Agregação otimizada de motoboys falhou; usando consulta legada sem interromper o painel. ${optimizationError?.message || optimizationError}`,
         );
-        motoboysWithDeliveriesCount =
-          await this.buildMotoboyDeliverySummariesLegacy(
-            scopedMotoboys,
-            requesterCityId,
+        try {
+          motoboysWithDeliveriesCount =
+            await this.buildMotoboyDeliverySummariesLegacy(
+              scopedMotoboys,
+              requesterCityId,
+            );
+        } catch (legacyError: any) {
+          // Falha no cálculo do total/última entrega não pode ocultar TODA
+          // a lista. A atribuição deve continuar disponível por cidade.
+          this.logger.warn(
+            `Falha na consulta legada de contagens dos motoboys: ${legacyError?.message || legacyError}`,
           );
+          motoboysWithDeliveriesCount = scopedMotoboys.map((motoboy) => ({
+            name: `${motoboy.name} - 0`,
+            lastDeliveryDate: [],
+            id: motoboy.id,
+          }));
+        }
       }
 
       return await this.changeNameForMotoboy(motoboysWithDeliveriesCount);
@@ -635,16 +656,21 @@ export class UserService {
           lastDeliveryWhere['establishment.cityId'] = requesterCityId;
         }
 
-        const lastDelivery = await this.deliveryRepository.find({
-          where: lastDeliveryWhere,
-          order: { finishedAt: 'DESC' },
-          take: 1,
-          select: { finishedAt: true } as any,
-        });
+        let lastDelivery: DeliveryEntity[] = [];
+        try {
+          lastDelivery = await this.deliveryRepository.find({
+            where: lastDeliveryWhere,
+            order: { finishedAt: 'DESC' },
+            take: 1,
+            select: { finishedAt: true } as any,
+          });
+        } catch (error: any) {
+          this.logger.warn(`Última entrega indisponível para motoboy ${motoboy.id}: ${error?.message || error}`);
+        }
 
         return {
           name: `${motoboy.name} - ${activeCountByMotoboyId.get(motoboy.id) || 0}`,
-          lastDeliveryDate: lastDelivery,
+          lastDeliveryDate: lastDelivery || [],
           id: motoboy.id,
         };
       }),
@@ -697,7 +723,7 @@ export class UserService {
     const newArrayForMotoboys: Record<string, string>[] = [];
     motoboysWithDeliveriesCount.forEach((motoboy) => {
       let hour = 'sem ultima entrega';
-      if (motoboy.lastDeliveryDate[0]) {
+      if (motoboy.lastDeliveryDate?.[0]?.finishedAt) {
         const finishedAtDate = new Date(motoboy.lastDeliveryDate[0].finishedAt);
         if (!Number.isNaN(finishedAtDate.getTime())) {
           hour = `${finishedAtDate.toISOString().substring(11, 16)} horas`;

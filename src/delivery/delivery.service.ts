@@ -1375,10 +1375,23 @@ export class DeliveryService implements OnModuleInit {
       );
     }
 
-    // Mesmo sem alterar o status, o lojista não pode enviar outro motoboyId.
-    // Nem um usuário com permission=master pode contornar a regra por PUT.
+    // Um motoboy que chega depois de outro deve receber a mensagem de
+    // concorrência/atribuição, e não a regra administrativa dos lojistas.
     if (
-      !isAdminUser &&
+      userFinded.type === UserType.MOTOBOY &&
+      this.isDeliveryAssigned(deliveryFinded) &&
+      deliveryFinded.motoboy?.id !== userFinded.id
+    ) {
+      throw new BadRequestException(
+        'Essa entrega já foi atribuída por outro entregador.',
+      );
+    }
+
+    // A restrição de reatribuição é para lojistas; motoboys continuam
+    // autorizados a avançar apenas as próprias entregas.
+    // Nem permission=master transforma um lojista em ADMIN/SUPERADMIN.
+    if (
+      this.isShopkeeperUser(userFinded) &&
       deliveryData.motoboyId !== undefined &&
       this.isDeliveryAssigned(deliveryFinded)
     ) {
@@ -1431,7 +1444,7 @@ export class DeliveryService implements OnModuleInit {
         deliveryFinded.motoboy.id != userFinded.id
       ) {
         throw new BadRequestException(
-          'Essa entrega já foi atribuída a outro entregador.',
+          'Essa entrega já foi atribuída por outro entregador.',
         );
       }
 
@@ -2948,7 +2961,7 @@ export class DeliveryService implements OnModuleInit {
         currentDelivery.motoboy.id !== motoboyFinded.id
       ) {
         throw new BadRequestException(
-          'Essa entrega já foi atribuída a outro entregador.',
+          'Essa entrega já foi atribuída por outro entregador.',
         );
       }
 
@@ -2965,7 +2978,10 @@ export class DeliveryService implements OnModuleInit {
   }
 
   private ensureCityAccess(user: UserEntity, resourceCityId: string) {
-    if (user.type !== UserType.SUPERADMIN && user.cityId !== resourceCityId) {
+    if (
+      user.type !== UserType.SUPERADMIN &&
+      String(user.cityId || '') !== String(resourceCityId || '')
+    ) {
       throw new UnauthorizedException(
         'Você não tem permissão para acessar recursos de outra cidade.',
       );

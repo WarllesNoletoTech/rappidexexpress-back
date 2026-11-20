@@ -668,6 +668,21 @@ describe('DeliveryService', () => {
       deliveryRepository.updateOne.mockResolvedValue({ matchedCount: 1 });
     });
 
+    it('retorna a mensagem antiga para o segundo motoboy em entrega já atribuída', async () => {
+      userRepository.findOneBy.mockResolvedValue({
+        id: 'motoboy-2', type: UserType.MOTOBOY, cityId,
+      });
+      await expect(
+        service.updateDelivery(
+          'delivery-1',
+          { motoboyId: 'motoboy-2', status: StatusDelivery.ONCOURSE },
+          { id: 'motoboy-2', type: UserType.MOTOBOY } as any,
+        ),
+      ).rejects.toThrow('Essa entrega já foi atribuída por outro entregador.');
+      expect(deliveryRepository.updateOne).not.toHaveBeenCalled();
+      expect(deliveryRepository.save).not.toHaveBeenCalled();
+    });
+
     it.each([UserType.SHOPKEEPER, UserType.SHOPKEEPERADMIN])(
       'nega troca de motoboy pelo perfil %s sem status no PUT',
       async (type) => {
